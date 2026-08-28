@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KoreStream Universal Receiver</title>
+    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+</head>
+<body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
+    
+    <cast-media-player></cast-media-player>
+
+    <script>
+        const context = cast.framework.CastReceiverContext.getInstance();
+        const playerManager = context.getPlayerManager();
+        const playbackConfig = new cast.framework.PlaybackConfig();
+
+        // 1. Configuración de Shaka Player para directos y tolerancia de buffers
+        playbackConfig.shakaConfiguration = {
+            streaming: {
+                jumpLargeGaps: true,
+                liveIgnoreNtp: true,
+                inaccurateManifestTolerance: 2,
+                bufferingGoal: 10,
+                rebufferingGoal: 2,
+                stallEnabled: true
+            },
+            manifest: {
+                hls: {
+                    ignoreTextStreamFailures: true
+                },
+                dash: {
+                    ignoreMinBufferTime: true,
+                    autoCorrectDrift: true
+                }
+            },
+            drm: {
+                clearKeys: {},
+                servers: {},
+                advanced: {}
+            }
+        };
+
+        // Variable global para persistir las cabeceras durante toda la sesión (incluyendo redirects)
+        let activeCustomData = {};
+
+        // 2. Interceptor de nivel CAF para peticiones de manifiesto/segmento iniciales
+        playbackConfig.manifestRequestHandler = requestInfo => {
+            requestInfo.withCredentials = true;
+            applyHeaders(requestInfo.headers, activeCustomData);
+        };
+        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
+
+        // Función auxiliar para inyectar cabeceras en cualquier objeto headers
+        function applyHeaders(targetHeaders, sourceData) {
+            if (!targetHeaders || !sourceData) return;
+            
+            if (sourceData.headers && typeof sourceData.headers === 'object') {
+                for (const [key, value] of Object.entries(sourceData.headers)) {
+                    targetHeaders[key] = value;
+                }
+            }
+            if (sourceData.referer) {
+                targetHeaders['Referer'] = sourceData.referer;
+            }
+            if (sourceData.userAgent) {
+                targetHeaders['X-User-Agent'] = sourceData.userAgent; // Alternativa segura si el navegador protege User-Agent
+            }
+        }
+
+        // 3. Interceptor de Shaka Networking Engine (Asegura inyección en REDIRECTS y Chunks)
+        playerManager.setMessageInterceptor(
+            cast.framework.messages.MessageType.LOAD,
+            loadRequestData => {
+                activeCustomData = loadRequestData.media.customData || {};
+                const drm = { clearKeys: {}, servers: {}, advanced: {} };
+
+                // A) Configuración de ClearKeys
+                if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
+                    for (const [keyId, key] of Object.entries(activeCustomData.clearKeys)) {
+                        const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+                        const cleanKey = key.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+                        drm.clearKeys[cleanKeyId] = cleanKey;
+                    }
+                }
+
+                // B) Configuración de Widevine Modular
+                if (activeCustomData.licenseServer) {
+                    drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
+                    if (activeCustomData.drmHeaders && typeof activeCustomData.drmHeaders === 'object') {
+                        drm.advanced['com.widevine.alpha'] = {
+                            headers: activeCustomData.drmHeaders
+                        };
+                    }
+                }
+
+                loadRequestData.media.playbackConfig = {
+                    shakaConfiguration: {
+                        drm: drm
+                    }
+                };
+
+                return loadRequestData;
+            }
+        );
+
+        // 4. Hook tras instanciar el player para registrar el filtro de peticiones persistente
+        playerManager.addEventListener(
+            cast.framework.events.EventType.PLAYER_LOAD_COMPLETE,
+            () => {
+                const shakaPlayer = playerManager.getShakaPlayer();
+                if (shakaPlayer) {
+                    const netEngine = shakaPlayer.getNetworkingEngine();
+                    
+                    // Se ejecuta antes de CADA request HTTP (incluso tras seguir un 302)
+                    netEngine.registerRequestFilter((type, request) => {
+                        request.allowCrossSiteCredentials = true;
+                        applyHeaders(request.headers, activeCustomData);
+                    });
+                }
+            }
+        );
+
+        context.start({ playbackConfig: playbackConfig });
+    </script>
+</body>
+</html>
