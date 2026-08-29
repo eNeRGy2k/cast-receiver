@@ -33,8 +33,7 @@
                 hls: { ignoreTextStreamFailures: true },
                 dash: { 
                     ignoreMinBufferTime: true, 
-                    autoCorrectDrift: true,
-                    ignoreDrmInfo: false
+                    autoCorrectDrift: true
                 }
             },
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a'],
@@ -48,22 +47,27 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // Modificador de manifiesto: limpia esquemas DRM que no coincidan con las llaves recibidas
+        // 1. Limpieza de DRM en el XML del Manifiesto cuando hay ClearKeys
         playbackConfig.manifestHandler = (manifestText, requestInfo) => {
-            if (activeCustomData.clearKeys && manifestText && manifestText.includes('ContentProtection')) {
+            const hasClearKeys = activeCustomData.clearKeys && 
+                                 typeof activeCustomData.clearKeys === 'object' && 
+                                 Object.keys(activeCustomData.clearKeys).length > 0;
+
+            if (hasClearKeys && manifestText && manifestText.includes('ContentProtection')) {
                 try {
-                    // Si usamos ClearKeys, eliminamos PlayReady y Widevine del XML para que Shaka no intente consultar servidores
+                    // Purgar PlayReady (9a04f079...) y Widevine (edef8ba9...) del XML
                     manifestText = manifestText.replace(/<ContentProtection[^>]*9a04f079-9840-4286-ab92-e65be0f776f7[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
                     manifestText = manifestText.replace(/<ContentProtection[^>]*9A04F079-9840-4286-AB92-E65BE0F776F7[^>]*\/>/gi, '');
                     manifestText = manifestText.replace(/<ContentProtection[^>]*edef8ba9-79d6-4ace-a3c8-27dcd51d21ed[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
                     manifestText = manifestText.replace(/<ContentProtection[^>]*EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED[^>]*\/>/gi, '');
                 } catch (e) {
-                    console.warn('Error manifestHandler:', e);
+                    console.warn('Error en manifestHandler:', e);
                 }
             }
             return manifestText;
         };
 
+        // 2. Configuración dinámica de Shaka Player
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
@@ -74,10 +78,12 @@
                 advanced: {} 
             };
 
-            const hasClearKeys = activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object' && Object.keys(activeCustomData.clearKeys).length > 0;
+            const hasClearKeys = activeCustomData.clearKeys && 
+                                 typeof activeCustomData.clearKeys === 'object' && 
+                                 Object.keys(activeCustomData.clearKeys).length > 0;
 
             if (hasClearKeys) {
-                // Modo ClearKey puro
+                // Modo ClearKey estricto (ignora Widevine/PlayReady)
                 config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
                 for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof keyVal === 'string') {
@@ -87,7 +93,7 @@
                     }
                 }
             } else if (activeCustomData.licenseServer) {
-                // Modo Widevine
+                // Modo Widevine explícito
                 config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
                 if (activeCustomData.drmHeaders && typeof activeCustomData.drmHeaders === 'object') {
@@ -98,6 +104,27 @@
             }
 
             return config;
+        });
+
+        // 3. Filtro de pistas de audio para evitar AUDIO_RENDERER_ERROR en Nest Hub
+        playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
+            const shakaPlayer = playerManager.getShakaPlayer();
+            if (shakaPlayer) {
+                try {
+                    const tracks = shakaPlayer.getVariantTracks();
+                    // Descartar pistas con codecs Dolby AC-3 / EC-3
+                    const safeTracks = tracks.filter(t => {
+                        const codec = (t.audioCodec || '').toLowerCase();
+                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3') && !codec.includes('ac3');
+                    });
+
+                    if (safeTracks.length > 0) {
+                        shakaPlayer.selectVariantTrack(safeTracks[0], /* clearBuffer= */ false);
+                    }
+                } catch (e) {
+                    console.warn('Error seleccionando pista de audio segura:', e);
+                }
+            }
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
