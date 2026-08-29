@@ -21,11 +21,14 @@
         const playbackConfig = new cast.framework.PlaybackConfig();
 
         playbackConfig.shakaConfiguration = {
+            abr: {
+                enabled: false // Evita peticiones simultáneas abortadas en el proxy local
+            },
             streaming: {
                 jumpLargeGaps: true,
                 liveIgnoreNtp: true,
                 inaccurateManifestTolerance: 2,
-                bufferingGoal: 8,
+                bufferingGoal: 6,
                 rebufferingGoal: 2,
                 stallEnabled: true
             },
@@ -47,7 +50,7 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // 1. Parcheador Quirúrgico de MPD al vuelo (manifestHandler)
+        // 1. Limpiador y Parcheador Quirúrgico de MPD
         playbackConfig.manifestHandler = (manifestText, requestInfo) => {
             if (!manifestText) return manifestText;
 
@@ -57,34 +60,29 @@
 
             if (hasClearKeys) {
                 try {
-                    // A) Purgar bloques PlayReady y Widevine para no confundir a Shaka
-                    manifestText = manifestText.replace(/<ContentProtection[^>]*9a04f079-9840-4286-ab92-e65be0f776f7[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
-                    manifestText = manifestText.replace(/<ContentProtection[^>]*9A04F079-9840-4286-AB92-E65BE0F776F7[^>]*\/>/gi, '');
-                    manifestText = manifestText.replace(/<ContentProtection[^>]*edef8ba9-79d6-4ace-a3c8-27dcd51d21ed[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
-                    manifestText = manifestText.replace(/<ContentProtection[^>]*EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED[^>]*\/>/gi, '');
+                    // Purgar todos los ContentProtection de PlayReady, Widevine y otros esquemas propietarios
+                    manifestText = manifestText.replace(/<ContentProtection[^>]*schemeIdUri=["'](?!urn:mpeg:dash:mp4protection:2011|urn:uuid:e2719d58-a985-b3c9-781a-b030e4d41410)[^"']+["'][^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
+                    manifestText = manifestText.replace(/<ContentProtection[^>]*schemeIdUri=["'](?!urn:mpeg:dash:mp4protection:2011|urn:uuid:e2719d58-a985-b3c9-781a-b030e4d41410)[^"']+\/>/gi, '');
 
-                    // B) Inyección quirúrgica de default_KID en formato UUID si falta
+                    // Inyección de default_KID si falta
                     if (!manifestText.includes('default_KID')) {
                         const firstKidHex = Object.keys(activeCustomData.clearKeys)[0].replace(/[^a-fA-F0-9]/g, '');
                         if (firstKidHex.length === 32) {
                             const kidUuid = firstKidHex.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5').toLowerCase();
-                            console.log('Inyectando default_KID al vuelo en MPD:', kidUuid);
-                            
                             manifestText = manifestText.replace(
-                                /schemeIdUri="urn:mpeg:dash:mp4protection:2011"/g,
+                                /schemeIdUri=["']urn:mpeg:dash:mp4protection:2011["']/gi,
                                 `schemeIdUri="urn:mpeg:dash:mp4protection:2011" default_KID="${kidUuid}"`
                             );
                         }
                     }
                 } catch (e) {
-                    console.warn('Error parcheando MPD:', e);
+                    console.warn('Error en manifestHandler:', e);
                 }
             }
-
             return manifestText;
         };
 
-        // 2. Configuración dinámica DRM
+        // 2. Configuración DRM dinámica
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
@@ -121,7 +119,7 @@
             return config;
         });
 
-        // 3. Selección segura de pista de audio estéreo
+        // 3. Audio seguro y protección de sesión
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
@@ -136,7 +134,7 @@
                         shakaPlayer.selectVariantTrack(safeTracks[0], false);
                     }
                 } catch (e) {
-                    console.warn('Error seleccionando audio estéreo:', e);
+                    console.warn('Audio selection error:', e);
                 }
             }
         });
