@@ -19,6 +19,7 @@
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
+        // 1. Configuración de Shaka Player adaptada al hardware de Nest Hub
         playbackConfig.shakaConfiguration = {
             streaming: {
                 jumpLargeGaps: true,
@@ -26,29 +27,49 @@
                 inaccurateManifestTolerance: 2,
                 bufferingGoal: 8,
                 rebufferingGoal: 2,
-                stallEnabled: true
+                stallEnabled: true,
+                alwaysStreamText: false
             },
             manifest: {
                 hls: { ignoreTextStreamFailures: true },
-                dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
-            }
+                dash: { 
+                    ignoreMinBufferTime: true, 
+                    autoCorrectDrift: true,
+                    // Ignora elementos DRM no configurados para evitar peticiones a UNSET_LICENSE_URL
+                    ignoreDrmInfo: false 
+                }
+            },
+            // Priorizar audio AAC estéreo para evitar AUDIO_RENDERER_ERROR
+            preferredAudioChannelCount: 2,
+            preferFewerChannels: true
         };
 
-        // Sin withCredentials y sin inyección de X-User-Agent manual
+        // 2. Interceptor de peticiones anónimas (evita conflictos de CORS)
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
+            // Bloquea peticiones huérfanas de licencias que no tengan URL asignada
+            if (requestInfo.url && requestInfo.url.includes('UNSET_LICENSE_URL')) {
+                return null;
+            }
             return requestInfo;
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
         playbackConfig.licenseRequestHandler = playbackConfig.manifestRequestHandler;
 
+        // 3. Manejador dinámico de DRM
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             const customData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
             config.shakaConfiguration = config.shakaConfiguration || {};
-            config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
+            config.shakaConfiguration.drm = { 
+                clearKeys: {}, 
+                servers: {}, 
+                advanced: {},
+                // Preferir ClearKey o Widevine sobre PlayReady en Nest Hub
+                preferredKeySystems: ['org.w3.clearkey', 'com.widevine.alpha']
+            };
 
-            // ClearKey
+            // Inyección de ClearKeys
             if (customData.clearKeys && typeof customData.clearKeys === 'object') {
                 for (const [keyId, keyVal] of Object.entries(customData.clearKeys)) {
                     if (typeof keyVal === 'string') {
@@ -59,9 +80,14 @@
                 }
             }
 
-            // Widevine
+            // Inyección de Widevine
             if (customData.licenseServer) {
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = customData.licenseServer;
+                if (customData.drmHeaders && typeof customData.drmHeaders === 'object') {
+                    config.shakaConfiguration.drm.advanced['com.widevine.alpha'] = {
+                        headers: customData.drmHeaders
+                    };
+                }
             }
 
             return config;
