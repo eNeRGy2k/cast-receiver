@@ -16,6 +16,7 @@
     <script>
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
+        let activeCustomData = {};
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
@@ -32,9 +33,7 @@
                 hls: { ignoreTextStreamFailures: true },
                 dash: { 
                     ignoreMinBufferTime: true, 
-                    autoCorrectDrift: true,
-                    // Desactivar parseo de DRM del manifest si usamos ClearKeys inyectadas
-                    ignoreDrmInfo: false
+                    autoCorrectDrift: true
                 }
             },
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a'],
@@ -42,27 +41,43 @@
             preferFewerChannels: true
         };
 
-        // Interceptor de manifiestos y segmentos
+        // 1. Interceptor de peticiones HTTP
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
             return requestInfo;
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // Interceptor estricto de licencias: bloquea dominios PlayReady inválidos
+        // 2. Interceptor de licencias: Mock para silenciar PlayReady
         playbackConfig.licenseRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
             const url = requestInfo.url || '';
+            // Si intenta pedir licencia a un endpoint PlayReady inexistente, evitar el error 6007
             if (url.includes('sspplayready') || url.includes('UNSET_LICENSE_URL') || url.includes('VoPlayReady')) {
-                // Anular la petición devolviendo un objeto vacío sin conexión de red
-                return null;
+                // Redirigir a data URI con respuesta vacía para no romper el pipeline
+                requestInfo.url = 'data:application/octet-stream;base64,';
             }
             return requestInfo;
         };
 
-        // Manejador dinámico de configuración
+        // 3. Modificación del Manifiesto antes del parseo de Shaka Player
+        playbackConfig.manifestHandler = (manifestText, requestInfo) => {
+            // Si el stream tiene ClearKeys, podar los bloques PlayReady del XML
+            if (activeCustomData.clearKeys && manifestText && manifestText.includes('ContentProtection')) {
+                try {
+                    // Eliminar bloques ContentProtection de PlayReady (schemeIdUri 9a04f079-...)
+                    manifestText = manifestText.replace(/<ContentProtection[^>]*9a04f079-9840-4286-ab92-e65be0f776f7[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
+                    manifestText = manifestText.replace(/<ContentProtection[^>]*9A04F079-9840-4286-AB92-E65BE0F776F7[^>]*\/>/gi, '');
+                } catch (e) {
+                    console.warn('Error filtrando ContentProtection de PlayReady:', e);
+                }
+            }
+            return manifestText;
+        };
+
+        // 4. Configuración dinámica DRM
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
-            const customData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
+            activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { 
@@ -72,27 +87,20 @@
                 preferredKeySystems: ['org.w3.clearkey', 'com.widevine.alpha']
             };
 
-            const hasClearKeys = customData.clearKeys && typeof customData.clearKeys === 'object' && Object.keys(customData.clearKeys).length > 0;
-
-            if (hasClearKeys) {
-                // Si tenemos ClearKeys, forzamos que Shaka ignore otros DRM (como PlayReady en el MPD)
-                config.shakaConfiguration.manifest = config.shakaConfiguration.manifest || {};
-                config.shakaConfiguration.manifest.dash = config.shakaConfiguration.manifest.dash || {};
-                config.shakaConfiguration.manifest.dash.ignoreDrmInfo = true;
-
-                for (const [keyId, keyVal] of Object.entries(customData.clearKeys)) {
+            // Inyección de pares ClearKey limpios
+            if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
+                for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof keyVal === 'string') {
                         const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         const cleanKey = keyVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
-            } else if (customData.licenseServer) {
-                // Widevine Modular
-                config.shakaConfiguration.drm.servers['com.widevine.alpha'] = customData.licenseServer;
-                if (customData.drmHeaders && typeof customData.drmHeaders === 'object') {
+            } else if (activeCustomData.licenseServer) {
+                config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
+                if (activeCustomData.drmHeaders && typeof activeCustomData.drmHeaders === 'object') {
                     config.shakaConfiguration.drm.advanced['com.widevine.alpha'] = {
-                        headers: customData.drmHeaders
+                        headers: activeCustomData.drmHeaders
                     };
                 }
             }
