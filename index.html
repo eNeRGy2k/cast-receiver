@@ -2,9 +2,11 @@
 <html lang="es">
 <head>
     <meta charset="utf-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KoreStream Universal Receiver</title>
-    <!-- Framework Oficial CAF v3 -->
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -14,11 +16,9 @@
     <script>
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
-        let activeCustomData = {};
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
-        // 1. Configuración de Shaka Player optimizada para directos DASH y HLS
         playbackConfig.shakaConfiguration = {
             streaming: {
                 jumpLargeGaps: true,
@@ -34,16 +34,23 @@
             }
         };
 
-        // 2. Manejador de configuración dinámica (DRM ClearKey / Widevine)
+        // Sin withCredentials y sin inyección de X-User-Agent manual
+        playbackConfig.manifestRequestHandler = requestInfo => {
+            requestInfo.withCredentials = false;
+            return requestInfo;
+        };
+        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
+        playbackConfig.licenseRequestHandler = playbackConfig.manifestRequestHandler;
+
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
-            activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
+            const customData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
-            // Inyección de ClearKeys (pares KID:KEY en hexadecimal estricto)
-            if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
-                for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
+            // ClearKey
+            if (customData.clearKeys && typeof customData.clearKeys === 'object') {
+                for (const [keyId, keyVal] of Object.entries(customData.clearKeys)) {
                     if (typeof keyVal === 'string') {
                         const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         const cleanKey = keyVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
@@ -52,21 +59,14 @@
                 }
             }
 
-            // Inyección de Widevine Modular
-            if (activeCustomData.licenseServer) {
-                config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
-
-                if (activeCustomData.drmHeaders && typeof activeCustomData.drmHeaders === 'object') {
-                    config.shakaConfiguration.drm.advanced['com.widevine.alpha'] = {
-                        headers: activeCustomData.drmHeaders
-                    };
-                }
+            // Widevine
+            if (customData.licenseServer) {
+                config.shakaConfiguration.drm.servers['com.widevine.alpha'] = customData.licenseServer;
             }
 
             return config;
         });
 
-        // 3. Logger de eventos de error
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             console.error('CAF Player Error:', event.detailedErrorCode, event.error);
         });
