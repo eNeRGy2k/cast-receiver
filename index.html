@@ -27,16 +27,27 @@
             }
         };
 
-        // 2. Interceptores de red CAF
+        // 2. Interceptores de red CAF (CORREGIDOS con RETURN)
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = true;
             requestInfo.headers = requestInfo.headers || {};
             applyHeaders(requestInfo.headers, activeCustomData);
+            return requestInfo; // Indispensable en CAF v3
         };
-        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
-        playbackConfig.licenseRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // 3. Manejador dinámico de configuración (CORRECCIÓN CLAVE)
+        playbackConfig.segmentRequestHandler = requestInfo => {
+            requestInfo.headers = requestInfo.headers || {};
+            applyHeaders(requestInfo.headers, activeCustomData);
+            return requestInfo; // Indispensable en CAF v3
+        };
+
+        playbackConfig.licenseRequestHandler = requestInfo => {
+            requestInfo.headers = requestInfo.headers || {};
+            applyHeaders(requestInfo.headers, activeCustomData);
+            return requestInfo; // Indispensable en CAF v3
+        };
+
+        // 3. Manejador dinámico de configuración
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             const customData = loadRequestData.media.customData || {};
             activeCustomData = customData;
@@ -79,7 +90,7 @@
             }
         }
 
-        // 4. Filtro de red persistente de Shaka (para redirects)
+        // 4. Filtro de red persistente de Shaka (para redirects y chunks)
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
