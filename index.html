@@ -41,41 +41,28 @@
             preferFewerChannels: true
         };
 
-        // 1. Interceptor de peticiones HTTP
+        // 1. Interceptores CAF
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
             return requestInfo;
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // 2. Interceptor de licencias: Mock para silenciar PlayReady
-        playbackConfig.licenseRequestHandler = requestInfo => {
-            requestInfo.withCredentials = false;
-            const url = requestInfo.url || '';
-            // Si intenta pedir licencia a un endpoint PlayReady inexistente, evitar el error 6007
-            if (url.includes('sspplayready') || url.includes('UNSET_LICENSE_URL') || url.includes('VoPlayReady')) {
-                // Redirigir a data URI con respuesta vacía para no romper el pipeline
-                requestInfo.url = 'data:application/octet-stream;base64,';
-            }
-            return requestInfo;
-        };
-
-        // 3. Modificación del Manifiesto antes del parseo de Shaka Player
+        // 2. Modificación del Manifiesto DASH para ClearKeys
         playbackConfig.manifestHandler = (manifestText, requestInfo) => {
-            // Si el stream tiene ClearKeys, podar los bloques PlayReady del XML
             if (activeCustomData.clearKeys && manifestText && manifestText.includes('ContentProtection')) {
                 try {
-                    // Eliminar bloques ContentProtection de PlayReady (schemeIdUri 9a04f079-...)
+                    // Eliminar bloques PlayReady del XML para evitar llamadas innecesarias
                     manifestText = manifestText.replace(/<ContentProtection[^>]*9a04f079-9840-4286-ab92-e65be0f776f7[^>]*>[\s\S]*?<\/ContentProtection>/gi, '');
                     manifestText = manifestText.replace(/<ContentProtection[^>]*9A04F079-9840-4286-AB92-E65BE0F776F7[^>]*\/>/gi, '');
                 } catch (e) {
-                    console.warn('Error filtrando ContentProtection de PlayReady:', e);
+                    console.warn('Error manifestHandler:', e);
                 }
             }
             return manifestText;
         };
 
-        // 4. Configuración dinámica DRM
+        // 3. Configuración dinámica DRM
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
@@ -87,8 +74,13 @@
                 preferredKeySystems: ['org.w3.clearkey', 'com.widevine.alpha']
             };
 
-            // Inyección de pares ClearKey limpios
-            if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
+            const hasClearKeys = activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object' && Object.keys(activeCustomData.clearKeys).length > 0;
+
+            if (hasClearKeys) {
+                config.shakaConfiguration.manifest = config.shakaConfiguration.manifest || {};
+                config.shakaConfiguration.manifest.dash = config.shakaConfiguration.manifest.dash || {};
+                config.shakaConfiguration.manifest.dash.ignoreDrmInfo = true;
+
                 for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof keyVal === 'string') {
                         const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
@@ -106,6 +98,22 @@
             }
 
             return config;
+        });
+
+        // 4. Interceptor Shaka Networking Engine (Mock de respuestas de licencias huérfanas)
+        playerManager.setMessageInterceptor(cast.framework.messages.MessageType.LOAD, loadRequestData => {
+            // Asegurar que Shaka Networking capture y responda OK ficticio a UNSET_LICENSE_URL
+            const shakaPlayer = playerManager.getShakaPlayer();
+            if (shakaPlayer) {
+                shakaPlayer.getNetworkingEngine().registerResponseFilter((type, response) => {
+                    // Type 2 = RequestType.LICENSE
+                    if (type === 2 && (response.uri.includes('UNSET_LICENSE_URL') || response.status === 405 || response.status === 404)) {
+                        response.data = new ArrayBuffer(0);
+                        response.status = 200;
+                    }
+                });
+            }
+            return loadRequestData;
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
