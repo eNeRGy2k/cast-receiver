@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KoreStream Universal Receiver</title>
+    <!-- Framework Oficial CAF v3 -->
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -17,7 +18,7 @@
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
-        // 1. Configuración de Shaka Player para streams en vivo y DRM
+        // 1. Configuración de Shaka Player optimizada para directos DASH y HLS
         playbackConfig.shakaConfiguration = {
             streaming: {
                 jumpLargeGaps: true,
@@ -33,39 +34,14 @@
             }
         };
 
-        // Función unificada para inyectar cabeceras SIN forzar withCredentials
-        function injectCustomHeaders(requestInfo) {
-            // CRÍTICO: withCredentials DEBE ser false para permitir 'Access-Control-Allow-Origin: *'
-            requestInfo.withCredentials = false;
-            requestInfo.headers = requestInfo.headers || {};
-
-            if (activeCustomData.headers && typeof activeCustomData.headers === 'object') {
-                for (const [k, v] of Object.entries(activeCustomData.headers)) {
-                    requestInfo.headers[k] = v;
-                }
-            }
-            if (activeCustomData.referer) {
-                requestInfo.headers['Referer'] = activeCustomData.referer;
-            }
-            if (activeCustomData.userAgent) {
-                requestInfo.headers['X-User-Agent'] = activeCustomData.userAgent;
-            }
-            return requestInfo;
-        }
-
-        // 2. Interceptores de red CAF v3
-        playbackConfig.manifestRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
-        playbackConfig.segmentRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
-        playbackConfig.licenseRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
-
-        // 3. Manejador dinámico de configuración (DRM ClearKey / Widevine)
+        // 2. Manejador de configuración dinámica (DRM ClearKey / Widevine)
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
-            // ClearKey: Inyección de pares KID:KEY limpios
+            // Inyección de ClearKeys (pares KID:KEY en hexadecimal estricto)
             if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
                 for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof keyVal === 'string') {
@@ -76,7 +52,7 @@
                 }
             }
 
-            // Widevine Modular
+            // Inyección de Widevine Modular
             if (activeCustomData.licenseServer) {
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
 
@@ -90,7 +66,7 @@
             return config;
         });
 
-        // 4. Captura de errores
+        // 3. Logger de eventos de error
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             console.error('CAF Player Error:', event.detailedErrorCode, event.error);
         });
