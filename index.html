@@ -33,26 +33,34 @@
                 dash: { 
                     ignoreMinBufferTime: true, 
                     autoCorrectDrift: true,
-                    // Descartar esquemas DRM no soportados para no llamar licencias fantasma
+                    // Desactivar parseo de DRM del manifest si usamos ClearKeys inyectadas
                     ignoreDrmInfo: false
                 }
             },
-            // Forzar codec de audio AAC (mp4a) para evitar el crash del decodificador Dolby
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a'],
             preferredAudioChannelCount: 2,
             preferFewerChannels: true
         };
 
+        // Interceptor de manifiestos y segmentos
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
-            if (requestInfo.url && (requestInfo.url.includes('UNSET_LICENSE_URL') || requestInfo.url.includes('VoPlayReadyAquireLicense'))) {
+            return requestInfo;
+        };
+        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
+
+        // Interceptor estricto de licencias: bloquea dominios PlayReady inválidos
+        playbackConfig.licenseRequestHandler = requestInfo => {
+            requestInfo.withCredentials = false;
+            const url = requestInfo.url || '';
+            if (url.includes('sspplayready') || url.includes('UNSET_LICENSE_URL') || url.includes('VoPlayReady')) {
+                // Anular la petición devolviendo un objeto vacío sin conexión de red
                 return null;
             }
             return requestInfo;
         };
-        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
-        playbackConfig.licenseRequestHandler = playbackConfig.manifestRequestHandler;
 
+        // Manejador dinámico de configuración
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             const customData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
@@ -64,8 +72,14 @@
                 preferredKeySystems: ['org.w3.clearkey', 'com.widevine.alpha']
             };
 
-            // Inyección de ClearKeys
-            if (customData.clearKeys && typeof customData.clearKeys === 'object') {
+            const hasClearKeys = customData.clearKeys && typeof customData.clearKeys === 'object' && Object.keys(customData.clearKeys).length > 0;
+
+            if (hasClearKeys) {
+                // Si tenemos ClearKeys, forzamos que Shaka ignore otros DRM (como PlayReady en el MPD)
+                config.shakaConfiguration.manifest = config.shakaConfiguration.manifest || {};
+                config.shakaConfiguration.manifest.dash = config.shakaConfiguration.manifest.dash || {};
+                config.shakaConfiguration.manifest.dash.ignoreDrmInfo = true;
+
                 for (const [keyId, keyVal] of Object.entries(customData.clearKeys)) {
                     if (typeof keyVal === 'string') {
                         const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
@@ -73,25 +87,17 @@
                         config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
-            }
-
-            // Inyección de Widevine
-            if (customData.licenseServer) {
+            } else if (customData.licenseServer) {
+                // Widevine Modular
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = customData.licenseServer;
+                if (customData.drmHeaders && typeof customData.drmHeaders === 'object') {
+                    config.shakaConfiguration.drm.advanced['com.widevine.alpha'] = {
+                        headers: customData.drmHeaders
+                    };
+                }
             }
 
             return config;
-        });
-
-        // Interceptar selección de pistas de Shaka para descartar EC-3 / AC-3 antes de reproducir
-        playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
-            const shakaPlayer = playerManager.getShakaPlayer();
-            if (shakaPlayer) {
-                const audioTracks = shakaPlayer.getVariantTracks().filter(t => t.audioCodec && !t.audioCodec.includes('ac-3') && !t.audioCodec.includes('ec-3'));
-                if (audioTracks.length > 0) {
-                    shakaPlayer.selectAudioLanguage(audioTracks[0].language);
-                }
-            }
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
