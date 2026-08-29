@@ -17,7 +17,7 @@
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
-        // 1. Configuración de Shaka Player para streams en vivo y tolerancia
+        // 1. Configuración de Shaka Player para streams en vivo y DRM
         playbackConfig.shakaConfiguration = {
             streaming: {
                 jumpLargeGaps: true,
@@ -33,9 +33,10 @@
             }
         };
 
-        // Función unificada para inyectar cabeceras en las peticiones CAF
+        // Función unificada para inyectar cabeceras SIN forzar withCredentials
         function injectCustomHeaders(requestInfo) {
-            requestInfo.withCredentials = true;
+            // CRÍTICO: withCredentials DEBE ser false para permitir 'Access-Control-Allow-Origin: *'
+            requestInfo.withCredentials = false;
             requestInfo.headers = requestInfo.headers || {};
 
             if (activeCustomData.headers && typeof activeCustomData.headers === 'object') {
@@ -52,19 +53,19 @@
             return requestInfo;
         }
 
-        // 2. Interceptores de red CAF v3 (Manejan manifiestos, segmentos y licencias)
+        // 2. Interceptores de red CAF v3
         playbackConfig.manifestRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
         playbackConfig.segmentRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
         playbackConfig.licenseRequestHandler = requestInfo => injectCustomHeaders(requestInfo);
 
-        // 3. Manejador dinámico de configuración (DRM + CustomData)
+        // 3. Manejador dinámico de configuración (DRM ClearKey / Widevine)
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
 
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
-            // A) DRM: ClearKeys múltiples (Normalización Hexadecimal estricta)
+            // ClearKey: Inyección de pares KID:KEY limpios
             if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
                 for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof keyVal === 'string') {
@@ -75,7 +76,7 @@
                 }
             }
 
-            // B) DRM: Widevine Modular
+            // Widevine Modular
             if (activeCustomData.licenseServer) {
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
 
@@ -89,7 +90,7 @@
             return config;
         });
 
-        // 4. Captura de errores para depuración en consola
+        // 4. Captura de errores
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             console.error('CAF Player Error:', event.detailedErrorCode, event.error);
         });
