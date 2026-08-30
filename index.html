@@ -55,24 +55,24 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // Enrutador de Carga Ultra-Robusto
+        // Manejador Universal de Carga
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Detectar HLS (por contentId que contenga .m3u8 o contentType x-mpegurl)
-            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8') || contentId.includes('m3u8');
+            // Detección precisa de HLS
+            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8');
 
             if (isHls) {
-                console.log('Stream HLS detectado. Forzando reproductor nativo del sistema.');
-                // Anulamos shakaConfiguration y forzamos el pipeline nativo de HLS
+                console.log('Cargando HLS directamente con el reproductor nativo.');
+                // Desactivar Shaka para HLS puro evita conflictos con los fragmentos de RTVE
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
-            // Configuración DASH / Shaka con ClearKey
+            // Configuración DASH / Shaka
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
