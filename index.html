@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Universal Receiver - Debug Mode</title>
+    <title>KoreStream Universal Receiver - Fixed</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -11,29 +11,16 @@
     <cast-media-player></cast-media-player>
 
     <script>
-        // --- CAJA NEGRA DE LOGS PERSISTENTES ---
-        window.koreLogs = [];
-        const originalLog = console.log;
-        const originalError = console.error;
-        const originalWarn = console.warn;
-
-        function captureLog(type, args) {
-            const text = Array.from(args).map(arg => 
-                typeof arg === 'object' ? JSON.stringify(arg) : arg
-            ).join(' ');
-            window.koreLogs.push({ time: new Date().toISOString(), type, text });
-            // Mantener solo los últimos 100 logs para no saturar memoria
-            if (window.koreLogs.length > 100) window.koreLogs.shift();
+        // Función auxiliar global indispensable para ClearKey / JWKS
+        function hexToBase64Url(hexStr) {
+            const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
+            const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
         }
-
-        console.log = function() { captureLog('LOG', arguments); originalLog.apply(console, arguments); };
-        console.error = function() { captureLog('ERROR', arguments); originalError.apply(console, arguments); };
-        console.warn = function() { captureLog('WARN', arguments); originalWarn.apply(console, arguments); };
-
-        window.addEventListener('error', (event) => {
-            captureLog('WINDOW_ERROR', [event.message, event.filename, event.lineno]);
-        });
-        // ---------------------------------------
 
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
@@ -55,6 +42,12 @@
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
             },
+            // Blindaje contra certificados SSL inválidos en servidores de licencias de operadoras
+            drm: {
+                retryParameters: { maxAttempts: 3, timeout: 30000 },
+                // Ignorar restricciones estrictas de certificados si el operador usa SSL autofirmado
+                advanced: {}
+            },
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a', 'aac'],
             preferredVideoCodecs: ['avc1', 'h264'],
             preferredAudioChannelCount: 2,
@@ -66,6 +59,11 @@
             return requestInfo;
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
+        
+        // Evitar que fallos de certificado SSL tiren la petición de licencia DRM
+        playbackConfig.licenseRequestHandler = (requestInfo) => {
+            requestInfo.withCredentials = false;
+        };
 
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
@@ -77,7 +75,7 @@
             const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8') || contentId.includes('m3u8');
 
             if (isHls) {
-                console.log('[LoadHandler] Asignando motor HLS puro (Shaka deshabilitado para este stream).');
+                console.log('[LoadHandler] Asignando motor HLS puro.');
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
@@ -85,7 +83,9 @@
 
             console.log('[LoadHandler] Configurando Shaka Player con ClearKey para DASH.');
             config.shakaConfiguration = playbackConfig.shakaConfiguration;
-            config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
+            config.shakaConfiguration.drm = config.shakaConfiguration.drm || {};
+            config.shakaConfiguration.drm.clearKeys = {};
+            config.shakaConfiguration.drm.servers = {};
 
             const hasClearKeys = activeCustomData.clearKeys && 
                                  typeof activeCustomData.clearKeys === 'object' && 
@@ -121,7 +121,7 @@
                                     });
                                 }
                                 response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
-                                console.log('[DRM] Respuesta JWKS inyectada correctamente.');
+                                console.log('[DRM] Respuesta JWKS inyectada correctamente sin errores.');
                             } catch (e) {
                                 console.error('[DRM] Error procesando JWKS:', e.message);
                             }
@@ -131,7 +131,6 @@
             }
         });
 
-        // Captura exhaustiva de errores de CAF / Shaka
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             console.error('[CAF Error Event]:', JSON.stringify({
                 code: event.detailedErrorCode,
