@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Universal Receiver - Fixed</title>
+    <title>KoreStream Universal Receiver - Robust</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -11,7 +11,6 @@
     <cast-media-player></cast-media-player>
 
     <script>
-        // Función auxiliar global indispensable para ClearKey / JWKS
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -42,11 +41,8 @@
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
             },
-            // Blindaje contra certificados SSL inválidos en servidores de licencias de operadoras
             drm: {
-                retryParameters: { maxAttempts: 3, timeout: 30000 },
-                // Ignorar restricciones estrictas de certificados si el operador usa SSL autofirmado
-                advanced: {}
+                retryParameters: { maxAttempts: 0 } // Desactiva reintentos a servidores inexistentes
             },
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a', 'aac'],
             preferredVideoCodecs: ['avc1', 'h264'],
@@ -54,38 +50,28 @@
             preferFewerChannels: true
         };
 
+        // Handlers de cabeceras seguras
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
             return requestInfo;
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
-        
-        // Evitar que fallos de certificado SSL tiren la petición de licencia DRM
-        playbackConfig.licenseRequestHandler = (requestInfo) => {
-            requestInfo.withCredentials = false;
-        };
 
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            console.log(`[LoadHandler] Recibido ID: ${contentId} | Tipo: ${contentType}`);
-
-            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8') || contentId.includes('m3u8');
+            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8');
 
             if (isHls) {
-                console.log('[LoadHandler] Asignando motor HLS puro.');
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
-            console.log('[LoadHandler] Configurando Shaka Player con ClearKey para DASH.');
             config.shakaConfiguration = playbackConfig.shakaConfiguration;
-            config.shakaConfiguration.drm = config.shakaConfiguration.drm || {};
-            config.shakaConfiguration.drm.clearKeys = {};
-            config.shakaConfiguration.drm.servers = {};
+            config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
             const hasClearKeys = activeCustomData.clearKeys && 
                                  typeof activeCustomData.clearKeys === 'object' && 
@@ -104,9 +90,23 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
-            console.log('[Player] Carga completada con éxito en el reproductor.');
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
+                // Filtrado defensivo de pistas de audio para evitar el error AUDIO_RENDERER_ERROR (3016)
+                try {
+                    const tracks = shakaPlayer.getVariantTracks();
+                    const cleanTracks = tracks.filter(t => {
+                        const codec = (t.audioCodec || '').toLowerCase();
+                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3');
+                    });
+                    if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
+                        shakaPlayer.selectVariantTrack(cleanTracks[0], false);
+                    }
+                } catch (e) {
+                    console.warn('[AudioFilter Error]', e);
+                }
+
+                // Inyección local JWKS
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
                     netEngine.registerResponseFilter((type, response) => {
@@ -121,9 +121,8 @@
                                     });
                                 }
                                 response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
-                                console.log('[DRM] Respuesta JWKS inyectada correctamente sin errores.');
                             } catch (e) {
-                                console.error('[DRM] Error procesando JWKS:', e.message);
+                                console.error('[DRM Error]', e.message);
                             }
                         }
                     });
@@ -132,7 +131,7 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('[CAF Error Event]:', JSON.stringify({
+            console.error('[CAF Error Event]', JSON.stringify({
                 code: event.detailedErrorCode,
                 error: event.error
             }));
