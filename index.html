@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Universal Receiver</title>
+    <title>KoreStream Universal Receiver - Debug Mode</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -11,13 +11,36 @@
     <cast-media-player></cast-media-player>
 
     <script>
+        // --- CAJA NEGRA DE LOGS PERSISTENTES ---
+        window.koreLogs = [];
+        const originalLog = console.log;
+        const originalError = console.error;
+        const originalWarn = console.warn;
+
+        function captureLog(type, args) {
+            const text = Array.from(args).map(arg => 
+                typeof arg === 'object' ? JSON.stringify(arg) : arg
+            ).join(' ');
+            window.koreLogs.push({ time: new Date().toISOString(), type, text });
+            // Mantener solo los últimos 100 logs para no saturar memoria
+            if (window.koreLogs.length > 100) window.koreLogs.shift();
+        }
+
+        console.log = function() { captureLog('LOG', arguments); originalLog.apply(console, arguments); };
+        console.error = function() { captureLog('ERROR', arguments); originalError.apply(console, arguments); };
+        console.warn = function() { captureLog('WARN', arguments); originalWarn.apply(console, arguments); };
+
+        window.addEventListener('error', (event) => {
+            captureLog('WINDOW_ERROR', [event.message, event.filename, event.lineno]);
+        });
+        // ---------------------------------------
+
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
-        // Configuración estricta para descartar contenido incompatible (Error 4032)
         playbackConfig.shakaConfiguration = {
             abr: { enabled: false },
             streaming: {
@@ -29,13 +52,9 @@
                 stallEnabled: true
             },
             manifest: {
-                hls: { 
-                    ignoreTextStreamFailures: true,
-                    allowInsecureScheme: true
-                },
+                hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
             },
-            // Forzar códecs compatibles con hardware Chromecast básico
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a', 'aac'],
             preferredVideoCodecs: ['avc1', 'h264'],
             preferredAudioChannelCount: 2,
@@ -53,17 +72,18 @@
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Si es HLS, aseguramos que ignore códecs no soportados para prevenir el error 4032
+            console.log(`[LoadHandler] Recibido ID: ${contentId} | Tipo: ${contentType}`);
+
             const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8') || contentId.includes('m3u8');
 
             if (isHls) {
-                // Dejamos que Shaka maneje el HLS de forma segura filtrando pistas no soportadas
-                // en lugar de apagar el pipeline por completo.
-                config.shakaConfiguration = playbackConfig.shakaConfiguration;
+                console.log('[LoadHandler] Asignando motor HLS puro (Shaka deshabilitado para este stream).');
+                config.shakaConfiguration = null;
+                config.playbackPipeline = null;
                 return config;
             }
 
-            // Configuración DASH / Shaka para ClearKey
+            console.log('[LoadHandler] Configurando Shaka Player con ClearKey para DASH.');
             config.shakaConfiguration = playbackConfig.shakaConfiguration;
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
@@ -83,28 +103,40 @@
             return config;
         });
 
-        // Filtrado de seguridad post-carga para evitar que el reproductor intente renderizar AC3/EAC3
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
+            console.log('[Player] Carga completada con éxito en el reproductor.');
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
-                try {
-                    const tracks = shakaPlayer.getVariantTracks();
-                    // Descartar variantes con audio AC3, EAC3 o códecs de alta exigencia que tiran el error 4032
-                    const safeTracks = tracks.filter(t => {
-                        const codec = (t.audioCodec || '').toLowerCase();
-                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3') && !codec.includes('ac3');
+                const netEngine = shakaPlayer.getNetworkingEngine();
+                if (netEngine) {
+                    netEngine.registerResponseFilter((type, response) => {
+                        if (type === shaka.net.NetworkingEngine.RequestType.LICENSE && activeCustomData.clearKeys) {
+                            try {
+                                const keysArray = [];
+                                for (const [kId, kVal] of Object.entries(activeCustomData.clearKeys)) {
+                                    keysArray.push({
+                                        kty: 'oct',
+                                        kid: hexToBase64Url(kId),
+                                        k: hexToBase64Url(kVal)
+                                    });
+                                }
+                                response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
+                                console.log('[DRM] Respuesta JWKS inyectada correctamente.');
+                            } catch (e) {
+                                console.error('[DRM] Error procesando JWKS:', e.message);
+                            }
+                        }
                     });
-                    if (safeTracks.length > 0) {
-                        shakaPlayer.selectVariantTrack(safeTracks[0], false);
-                    }
-                } catch (e) {
-                    console.warn('Error al filtrar pistas de audio:', e);
                 }
             }
         });
 
+        // Captura exhaustiva de errores de CAF / Shaka
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('CAF Player Error:', event.detailedErrorCode, event.error);
+            console.error('[CAF Error Event]:', JSON.stringify({
+                code: event.detailedErrorCode,
+                error: event.error
+            }));
         });
 
         context.start({ playbackConfig: playbackConfig });
