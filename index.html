@@ -18,7 +18,6 @@
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
 
-        // Utilidad: Convierte Hex a Base64Url (RFC 7515 / W3C ClearKey)
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -56,52 +55,20 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // 1. Limpieza radical del Manifiesto XML
-        playbackConfig.manifestHandler = (manifestText, requestInfo) => {
-            if (!manifestText) return manifestText;
-
-            const hasClearKeys = activeCustomData.clearKeys && 
-                                 typeof activeCustomData.clearKeys === 'object' && 
-                                 Object.keys(activeCustomData.clearKeys).length > 0;
-
-            if (hasClearKeys) {
-                try {
-                    // Purgar esquemas propietarios (PlayReady, Widevine, Nagra, etc.)
-                    manifestText = manifestText.replace(/<ContentProtection[\s\S]*?<\/ContentProtection>/gi, (match) => {
-                        if (match.includes('urn:mpeg:dash:mp4protection:2011')) {
-                            return match; // Conservar protección base MP4
-                        }
-                        return '';
-                    });
-                    manifestText = manifestText.replace(/<ContentProtection[^>]*\/>/gi, (match) => {
-                        if (match.includes('urn:mpeg:dash:mp4protection:2011')) {
-                            return match;
-                        }
-                        return '';
-                    });
-
-                    // Inyección de default_KID en formato UUID
-                    if (!manifestText.includes('default_KID')) {
-                        const firstKidHex = Object.keys(activeCustomData.clearKeys)[0].replace(/[^a-fA-F0-9]/g, '');
-                        if (firstKidHex.length === 32) {
-                            const kidUuid = firstKidHex.replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5').toLowerCase();
-                            manifestText = manifestText.replace(
-                                /schemeIdUri=["']urn:mpeg:dash:mp4protection:2011["']/gi,
-                                `schemeIdUri="urn:mpeg:dash:mp4protection:2011" default_KID="${kidUuid}"`
-                            );
-                        }
-                    }
-                } catch (e) {
-                    console.warn('Error procesando XML:', e);
-                }
-            }
-            return manifestText;
-        };
-
-        // 2. Configuración DRM de Shaka
+        // Interceptor inteligente por tipo de stream (DASH vs HLS)
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
+            const contentType = loadRequestData.media && loadRequestData.media.contentType ? loadRequestData.media.contentType : '';
+            const contentId = loadRequestData.media && loadRequestData.media.contentId ? loadRequestData.media.contentId : '';
 
+            // Si es HLS (.m3u8), desactivamos Shaka por completo y dejamos que el Chromecast use su reproductor HLS nativo
+            if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
+                console.log('Detectado stream HLS nativo. Desactivando Shaka para esta reproducción.');
+                config.playbackPipeline = null; // Fuerza el pipeline nativo de HLS de Google Cast
+                return config;
+            }
+
+            // Si es DASH, aplicamos la configuración Shaka y ClearKey habitual
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
@@ -118,26 +85,16 @@
                         config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
-            } else if (activeCustomData.licenseServer) {
-                config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
-                config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseServer;
-                if (activeCustomData.drmHeaders && typeof activeCustomData.drmHeaders === 'object') {
-                    config.shakaConfiguration.drm.advanced['com.widevine.alpha'] = {
-                        headers: activeCustomData.drmHeaders
-                    };
-                }
             }
 
             return config;
         });
 
-        // 3. Interceptor de Licencias y Audio seguro
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
-                    // Responder con JWKS si el CDM solicita actualización de licencia ClearKey
                     netEngine.registerResponseFilter((type, response) => {
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE && activeCustomData.clearKeys) {
                             try {
@@ -149,28 +106,12 @@
                                         k: hexToBase64Url(kVal)
                                     });
                                 }
-                                const jwksObj = { keys: keysArray };
-                                const jwksStr = JSON.stringify(jwksObj);
-                                response.data = new TextEncoder().encode(jwksStr).buffer;
+                                response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
                             } catch (e) {
-                                console.warn('Error generando JWKS response:', e);
+                                console.warn('Error JWKS:', e);
                             }
                         }
                     });
-                }
-
-                // Filtrar pistas de audio para evitar fallo de renderizado
-                try {
-                    const tracks = shakaPlayer.getVariantTracks();
-                    const safeTracks = tracks.filter(t => {
-                        const codec = (t.audioCodec || '').toLowerCase();
-                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3') && !codec.includes('ac3');
-                    });
-                    if (safeTracks.length > 0) {
-                        shakaPlayer.selectVariantTrack(safeTracks[0], false);
-                    }
-                } catch (e) {
-                    console.warn('Audio selection error:', e);
                 }
             }
         });
