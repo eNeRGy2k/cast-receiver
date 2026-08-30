@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.0.0</title>
+    <title>KoreStream Ultra Receiver - v1.0.1</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,10 +29,10 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.0.0</div>
+    <div id="app-version">KoreStream Receiver v1.0.1</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.0.0';
+        const RECEIVER_VERSION = 'v1.0.1';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
         function hexToBase64Url(hexStr) {
@@ -65,11 +65,27 @@
                 inaccurateManifestTolerance: 2,
                 bufferingGoal: 6,
                 rebufferingGoal: 2,
-                stallEnabled: true
+                stallEnabled: true,
+                // Fail-Fast: sin reintentos infinitos en peticiones de fragmentos caídos
+                retryParameters: {
+                    maxAttempts: 1,
+                    baseDelay: 100,
+                    backoffFactor: 1,
+                    fuzzFactor: 0,
+                    timeout: 4000
+                }
             },
             manifest: {
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
-                dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
+                dash: { ignoreMinBufferTime: true, autoCorrectDrift: true },
+                // Fail-Fast: abortar de inmediato si el manifiesto da 404/500/502
+                retryParameters: {
+                    maxAttempts: 1,
+                    baseDelay: 100,
+                    backoffFactor: 1,
+                    fuzzFactor: 0,
+                    timeout: 4000
+                }
             },
             drm: {
                 preferredKeySystems: ['org.w3.clearkey'],
@@ -101,7 +117,6 @@
                     const parser = new DOMParser();
                     const xmlDoc = parser.parseFromString(rawXml, 'application/xml');
 
-                    // 1. Fix availabilityStartTime (1970 / 2015 -> publishTime - 120s)
                     const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
                     if (mpdNode) {
                         const ast = mpdNode.getAttribute('availabilityStartTime') || '';
@@ -113,7 +128,6 @@
                         }
                     }
 
-                    // 2 & 3. Limpieza de DRM e inyección default_KID
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const firstKid = keyIds.length > 0 ? keyIds[0] : null;
@@ -146,7 +160,6 @@
                         });
                     }
 
-                    // 4. Filtrado de Audio Incompatible (AC-3 / EC-3 / EAC3)
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
@@ -165,7 +178,6 @@
                         }
                     });
 
-                    // 5. Normalización de Idioma (lang="und" -> lang="es")
                     const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
                     allAdaptationSets.forEach(as => {
                         const lang = as.getAttribute('lang');
@@ -198,14 +210,12 @@
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // HLS nativo: sin Shaka
             if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
-            // DASH con ClearKey
             config.shakaConfiguration = playbackConfig.shakaConfiguration;
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
             config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
@@ -262,11 +272,15 @@
             }
         });
 
+        // Intercepción inmediata de errores fatales
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('[CAF Event Error]', JSON.stringify({
-                code: event.detailedErrorCode,
-                error: event.error
-            }));
+            const shakaCode = event.error ? event.error.shakaErrorCode : null;
+            // Shaka 1001: HTTP_ERROR (404, 500, 502, etc.)
+            // Shaka 6012: NO_DRM_KEY_SYSTEM (o falta de claves)
+            if (shakaCode === 1001 || shakaCode === 6012 || shakaCode === 6007) {
+                console.warn(`[Fail-Fast] Error fatal HTTP/DRM (${shakaCode}). Abortando sesión de inmediato.`);
+                playerManager.stop();
+            }
         });
 
         context.start({ playbackConfig: playbackConfig });
