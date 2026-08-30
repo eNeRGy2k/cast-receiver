@@ -2,52 +2,18 @@
 <html lang="es">
 <head>
     <meta charset="utf-8">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KoreStream Universal Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
-
     <cast-media-player></cast-media-player>
-
     <script>
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
 
-        function hexToBase64Url(hexStr) {
-            const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
-            const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
-            let binary = '';
-            for (let i = 0; i < bytes.byteLength; i++) {
-                binary += String.fromCharCode(bytes[i]);
-            }
-            return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-        }
-
         const playbackConfig = new cast.framework.PlaybackConfig();
-
-        playbackConfig.shakaConfiguration = {
-            abr: { enabled: false },
-            streaming: {
-                jumpLargeGaps: true,
-                liveIgnoreNtp: true,
-                inaccurateManifestTolerance: 2,
-                bufferingGoal: 6,
-                rebufferingGoal: 2,
-                stallEnabled: true
-            },
-            manifest: {
-                hls: { ignoreTextStreamFailures: true },
-                dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
-            },
-            preferredAudioCodecs: ['mp4a.40.2', 'mp4a'],
-            preferredAudioChannelCount: 2,
-            preferFewerChannels: true
-        };
 
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
@@ -55,73 +21,29 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // Manejador Universal de Carga
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
-            const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Detección precisa de HLS
-            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8');
-
-            if (isHls) {
-                console.log('Cargando HLS directamente con el reproductor nativo.');
-                // Desactivar Shaka para HLS puro evita conflictos con los fragmentos de RTVE
+            // Si es HLS (.m3u8), desactivamos Shaka para usar el reproductor HLS nativo del Chromecast
+            if (contentId.includes('.m3u8') || contentId.includes('m3u8')) {
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
-            // Configuración DASH / Shaka
+            // Configuración DASH / Shaka para ClearKey
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
-            const hasClearKeys = activeCustomData.clearKeys && 
-                                 typeof activeCustomData.clearKeys === 'object' && 
-                                 Object.keys(activeCustomData.clearKeys).length > 0;
-
-            if (hasClearKeys) {
+            if (activeCustomData.clearKeys) {
                 config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
                 for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
-                    if (typeof keyVal === 'string') {
-                        const cleanKeyId = keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
-                        const cleanKey = keyVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
-                        config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
-                    }
+                    config.shakaConfiguration.drm.clearKeys[keyId.toLowerCase()] = keyVal.toLowerCase();
                 }
             }
 
             return config;
-        });
-
-        playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
-            const shakaPlayer = playerManager.getShakaPlayer();
-            if (shakaPlayer) {
-                const netEngine = shakaPlayer.getNetworkingEngine();
-                if (netEngine) {
-                    netEngine.registerResponseFilter((type, response) => {
-                        if (type === shaka.net.NetworkingEngine.RequestType.LICENSE && activeCustomData.clearKeys) {
-                            try {
-                                const keysArray = [];
-                                for (const [kId, kVal] of Object.entries(activeCustomData.clearKeys)) {
-                                    keysArray.push({
-                                        kty: 'oct',
-                                        kid: hexToBase64Url(kId),
-                                        k: hexToBase64Url(kVal)
-                                    });
-                                }
-                                response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
-                            } catch (e) {
-                                console.warn('Error JWKS:', e);
-                            }
-                        }
-                    });
-                }
-            }
-        });
-
-        playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('CAF Player Error:', event.detailedErrorCode, event.error);
         });
 
         context.start({ playbackConfig: playbackConfig });
