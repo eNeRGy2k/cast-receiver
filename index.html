@@ -55,20 +55,18 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
-        // Enrutador de Carga: Separa HLS Nativo de DASH/Shaka
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
             const contentType = loadRequestData.media && loadRequestData.media.contentType ? loadRequestData.media.contentType : '';
             const contentId = loadRequestData.media && loadRequestData.media.contentId ? loadRequestData.media.contentId : '';
 
-            // Si es HLS (.m3u8), evitamos completamente Shaka y el proxy si causa problemas HTTPS
+            // Si es HLS, dejamos que el reproductor nativo del Chromecast lo procese directamente
             if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
-                console.log('Cargando HLS nativo en Chromecast');
-                config.playbackPipeline = null; // Fuerza el reproductor HLS nativo del sistema
+                config.playbackPipeline = null; 
                 return config;
             }
 
-            // Configuración para DASH con ClearKeys
+            // Configuración DASH / Shaka
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
