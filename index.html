@@ -6,15 +6,35 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver</title>
+    <title>KoreStream Ultra Receiver - v1.0.0</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <style>
+        #app-version {
+            position: absolute;
+            top: 12px;
+            right: 15px;
+            background: rgba(0, 0, 0, 0.75);
+            color: #00ffcc;
+            font-family: monospace;
+            font-size: 14px;
+            padding: 4px 10px;
+            border-radius: 6px;
+            border: 1px solid rgba(0, 255, 204, 0.4);
+            z-index: 999999;
+            pointer-events: none;
+            letter-spacing: 0.5px;
+        }
+    </style>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
+    <div id="app-version">KoreStream Receiver v1.0.0</div>
 
     <script>
-        // Utilidades de conversión Hexadecimal <-> Base64Url
+        const RECEIVER_VERSION = 'v1.0.0';
+        console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
+
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -64,12 +84,10 @@
         playbackConfig.manifestRequestHandler = (requestInfo) => {
             requestInfo.withCredentials = false;
 
-            // Inyectar cabeceras personalizadas enviadas desde Android si existen
             if (activeCustomData && activeCustomData.headers) {
                 requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
             }
 
-            // Solo aplicar transformación DOM sobre manifiestos DASH
             if (!requestInfo.url.includes('.mpd') && !requestInfo.url.includes('dash')) {
                 return requestInfo;
             }
@@ -95,7 +113,7 @@
                         }
                     }
 
-                    // 2 & 3. Limpieza de DRM Propietario (PlayReady / Widevine) e inyección de ClearKey default_KID
+                    // 2 & 3. Limpieza de DRM e inyección default_KID
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const firstKid = keyIds.length > 0 ? keyIds[0] : null;
@@ -128,7 +146,7 @@
                         });
                     }
 
-                    // 4. Filtrado de Audio Incompatible (eliminar AC-3 / EC-3 / EAC3 que causan Error 3016)
+                    // 4. Filtrado de Audio Incompatible (AC-3 / EC-3 / EAC3)
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
@@ -160,7 +178,7 @@
                     const modifiedXml = serializer.serializeToString(xmlDoc);
                     response.data = new TextEncoder().encode(modifiedXml).buffer;
                 } catch (err) {
-                    console.error('[Manifest Parsing/Transformation Error]:', err);
+                    console.error('[Manifest Parsing Error]', err);
                 }
             };
 
@@ -180,7 +198,7 @@
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // HLS nativo: saltar Shaka y procesar con pipeline nativo del Cast
+            // HLS nativo: sin Shaka
             if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
@@ -208,7 +226,6 @@
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
-                // Filtro dinámico en memoria de pistas de audio
                 try {
                     const tracks = shakaPlayer.getVariantTracks();
                     const cleanTracks = tracks.filter(t => {
@@ -219,10 +236,9 @@
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
                     }
                 } catch (e) {
-                    console.warn('[Audio Track Filter Warning]:', e);
+                    console.warn('[Audio Track Filter Warning]', e);
                 }
 
-                // Inyector de licencias simuladas JWKS
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
                     netEngine.registerResponseFilter((type, response) => {
@@ -238,7 +254,7 @@
                                 }
                                 response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
                             } catch (e) {
-                                console.error('[JWKS Injection Error]:', e.message);
+                                console.error('[JWKS Error]', e.message);
                             }
                         }
                     });
@@ -247,7 +263,7 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('[CAF Event Error]:', JSON.stringify({
+            console.error('[CAF Event Error]', JSON.stringify({
                 code: event.detailedErrorCode,
                 error: event.error
             }));
