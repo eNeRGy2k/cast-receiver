@@ -55,18 +55,24 @@
         };
         playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
 
+        // Enrutador de Carga Ultra-Robusto
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
-            const contentType = loadRequestData.media && loadRequestData.media.contentType ? loadRequestData.media.contentType : '';
-            const contentId = loadRequestData.media && loadRequestData.media.contentId ? loadRequestData.media.contentId : '';
+            const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
+            const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Si es HLS, dejamos que el reproductor nativo del Chromecast lo procese directamente
-            if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
-                config.playbackPipeline = null; 
+            // Detectar HLS (por contentId que contenga .m3u8 o contentType x-mpegurl)
+            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8') || contentId.includes('m3u8');
+
+            if (isHls) {
+                console.log('Stream HLS detectado. Forzando reproductor nativo del sistema.');
+                // Anulamos shakaConfiguration y forzamos el pipeline nativo de HLS
+                config.shakaConfiguration = null;
+                config.playbackPipeline = null;
                 return config;
             }
 
-            // Configuración DASH / Shaka
+            // Configuración DASH / Shaka con ClearKey
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
