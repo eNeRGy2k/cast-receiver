@@ -2,16 +2,48 @@
 <html lang="es">
 <head>
     <meta charset="utf-8">
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KoreStream Universal Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <style>
+        #debug-console {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 40vh;
+            background: rgba(0,0,0,0.85);
+            color: #00ff00;
+            font-family: monospace;
+            font-size: 16px;
+            padding: 15px;
+            overflow-y: auto;
+            z-index: 99999;
+            pointer-events: none;
+        }
+    </style>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
+    <div id="debug-console">Iniciando Receiver...</div>
 
     <script>
+        function logOnScreen(msg, isError = false) {
+            const consoleDiv = document.getElementById('debug-console');
+            if (consoleDiv) {
+                const p = document.createElement('div');
+                p.style.color = isError ? '#ff4444' : '#00ff00';
+                p.textContent = `> ${msg}`;
+                consoleDiv.appendChild(p);
+                consoleDiv.scrollTop = consoleDiv.scrollHeight;
+            }
+            if (isError) console.error(msg);
+            else console.log(msg);
+        }
+
+        window.onerror = function(message, source, lineno, colno, error) {
+            logOnScreen(`JS Error: ${message} (${lineno}:${colno})`, true);
+        };
+
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
@@ -28,25 +60,6 @@
 
         const playbackConfig = new cast.framework.PlaybackConfig();
 
-        playbackConfig.shakaConfiguration = {
-            abr: { enabled: false },
-            streaming: {
-                jumpLargeGaps: true,
-                liveIgnoreNtp: true,
-                inaccurateManifestTolerance: 2,
-                bufferingGoal: 6,
-                rebufferingGoal: 2,
-                stallEnabled: true
-            },
-            manifest: {
-                hls: { ignoreTextStreamFailures: true },
-                dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
-            },
-            preferredAudioCodecs: ['mp4a.40.2', 'mp4a'],
-            preferredAudioChannelCount: 2,
-            preferFewerChannels: true
-        };
-
         playbackConfig.manifestRequestHandler = requestInfo => {
             requestInfo.withCredentials = false;
             return requestInfo;
@@ -58,15 +71,19 @@
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Enrutador estricto para HLS nativo
-            if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
-                console.log('Stream HLS detectado. Usando reproductor nativo del sistema.');
+            logOnScreen(`Cargando ContentId: ${contentId}`);
+            logOnScreen(`ContentType: ${contentType}`);
+
+            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8');
+
+            if (isHls) {
+                logOnScreen('-> Modo HLS Nativo activado.');
                 config.shakaConfiguration = null;
-                config.playbackPipeline = null; // Apaga Shaka para HLS puro
+                config.playbackPipeline = null;
                 return config;
             }
 
-            // Configuración DASH / Shaka para ClearKey
+            logOnScreen('-> Modo DASH / Shaka activado.');
             config.shakaConfiguration = config.shakaConfiguration || {};
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
 
@@ -87,6 +104,7 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
+            logOnScreen('Player Load Complete.');
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
                 const netEngine = shakaPlayer.getNetworkingEngine();
@@ -98,13 +116,14 @@
                                 for (const [kId, kVal] of Object.entries(activeCustomData.clearKeys)) {
                                     keysArray.push({
                                         kty: 'oct',
-                                        kid: hexToBase64Url(kId),
+                                           kid: hexToBase64Url(kId),
                                         k: hexToBase64Url(kVal)
                                     });
                                 }
                                 response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
+                                logOnScreen('Licencia ClearKey inyectada vía JWKS con éxito.');
                             } catch (e) {
-                                console.warn('Error JWKS:', e);
+                                logOnScreen(`Error generando JWKS: ${e.message}`, true);
                             }
                         }
                     });
@@ -113,7 +132,7 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('CAF Player Error:', event.detailedErrorCode, event.error);
+            logOnScreen(`CAF Error Code: ${event.detailedErrorCode}, Shaka/Detail: ${JSON.stringify(event.error || {})}`, true);
         });
 
         context.start({ playbackConfig: playbackConfig });
