@@ -2,8 +2,11 @@
 <html lang="es">
 <head>
     <meta charset="utf-8">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Universal Receiver - Robust</title>
+    <title>KoreStream Ultra Receiver</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
 </head>
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
@@ -11,6 +14,7 @@
     <cast-media-player></cast-media-player>
 
     <script>
+        // Utilidades de conversión Hexadecimal <-> Base64Url
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -19,6 +23,12 @@
                 binary += String.fromCharCode(bytes[i]);
             }
             return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        }
+
+        function formatKidToUuid(hexKid) {
+            const clean = hexKid.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+            if (clean.length !== 32) return hexKid;
+            return `${clean.slice(0,8)}-${clean.slice(8,12)}-${clean.slice(12,16)}-${clean.slice(16,20)}-${clean.slice(20)}`;
         }
 
         const context = cast.framework.CastReceiverContext.getInstance();
@@ -42,7 +52,8 @@
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true }
             },
             drm: {
-                retryParameters: { maxAttempts: 0 } // Desactiva reintentos a servidores inexistentes
+                preferredKeySystems: ['org.w3.clearkey'],
+                retryParameters: { maxAttempts: 0 }
             },
             preferredAudioCodecs: ['mp4a.40.2', 'mp4a', 'aac'],
             preferredVideoCodecs: ['avc1', 'h264'],
@@ -50,38 +61,143 @@
             preferFewerChannels: true
         };
 
-        // Handlers de cabeceras seguras
-        playbackConfig.manifestRequestHandler = requestInfo => {
+        playbackConfig.manifestRequestHandler = (requestInfo) => {
             requestInfo.withCredentials = false;
+
+            // Inyectar cabeceras personalizadas enviadas desde Android si existen
+            if (activeCustomData && activeCustomData.headers) {
+                requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
+            }
+
+            // Solo aplicar transformación DOM sobre manifiestos DASH
+            if (!requestInfo.url.includes('.mpd') && !requestInfo.url.includes('dash')) {
+                return requestInfo;
+            }
+
+            const originalModifyResponse = requestInfo.modifyResponse;
+            requestInfo.modifyResponse = (response) => {
+                if (originalModifyResponse) originalModifyResponse(response);
+
+                try {
+                    const rawXml = new TextDecoder('utf-8').decode(response.data);
+                    const parser = new DOMParser();
+                    const xmlDoc = parser.parseFromString(rawXml, 'application/xml');
+
+                    // 1. Fix availabilityStartTime (1970 / 2015 -> publishTime - 120s)
+                    const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
+                    if (mpdNode) {
+                        const ast = mpdNode.getAttribute('availabilityStartTime') || '';
+                        if (ast.startsWith('1970') || ast.startsWith('2015') || !ast) {
+                            const pubTimeStr = mpdNode.getAttribute('publishTime');
+                            const pubDate = pubTimeStr ? new Date(pubTimeStr) : new Date();
+                            const newAst = new Date(pubDate.getTime() - 120000).toISOString();
+                            mpdNode.setAttribute('availabilityStartTime', newAst);
+                        }
+                    }
+
+                    // 2 & 3. Limpieza de DRM Propietario (PlayReady / Widevine) e inyección de ClearKey default_KID
+                    const clearKeys = activeCustomData.clearKeys || {};
+                    const keyIds = Object.keys(clearKeys);
+                    const firstKid = keyIds.length > 0 ? keyIds[0] : null;
+                    const uuidKid = firstKid ? formatKidToUuid(firstKid) : null;
+
+                    const contentProtections = Array.from(xmlDoc.getElementsByTagName('ContentProtection'));
+                    contentProtections.forEach(cp => {
+                        const scheme = (cp.getAttribute('schemeIdUri') || '').toLowerCase();
+                        if (scheme.includes('edef8ba9') || scheme.includes('9a04f079') || scheme.includes('widevine') || scheme.includes('playready')) {
+                            cp.parentNode.removeChild(cp);
+                            return;
+                        }
+                        const psshNodes = cp.getElementsByTagName('cenc:pssh');
+                        Array.from(psshNodes).forEach(p => p.parentNode.removeChild(p));
+                    });
+
+                    if (uuidKid) {
+                        const adaptationSets = xmlDoc.getElementsByTagName('AdaptationSet');
+                        Array.from(adaptationSets).forEach(as => {
+                            let mp4Prot = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
+                                (cp.getAttribute('schemeIdUri') || '').includes('urn:mpeg:dash:mp4protection:2011')
+                            );
+                            if (!mp4Prot) {
+                                mp4Prot = xmlDoc.createElement('ContentProtection');
+                                mp4Prot.setAttribute('schemeIdUri', 'urn:mpeg:dash:mp4protection:2011');
+                                mp4Prot.setAttribute('value', 'cenc');
+                                as.insertBefore(mp4Prot, as.firstChild);
+                            }
+                            mp4Prot.setAttribute('cenc:default_KID', uuidKid);
+                        });
+                    }
+
+                    // 4. Filtrado de Audio Incompatible (eliminar AC-3 / EC-3 / EAC3 que causan Error 3016)
+                    const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
+                        (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
+                    );
+
+                    audioAdaptationSets.forEach(as => {
+                        const representations = Array.from(as.getElementsByTagName('Representation'));
+                        representations.forEach(rep => {
+                            const codecs = (rep.getAttribute('codecs') || '').toLowerCase();
+                            const mime = (rep.getAttribute('mimeType') || '').toLowerCase();
+                            if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
+                                rep.parentNode.removeChild(rep);
+                            }
+                        });
+                        if (as.getElementsByTagName('Representation').length === 0) {
+                            as.parentNode.removeChild(as);
+                        }
+                    });
+
+                    // 5. Normalización de Idioma (lang="und" -> lang="es")
+                    const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
+                    allAdaptationSets.forEach(as => {
+                        const lang = as.getAttribute('lang');
+                        if (!lang || lang.toLowerCase() === 'und') {
+                            as.setAttribute('lang', 'es');
+                        }
+                    });
+
+                    const serializer = new XMLSerializer();
+                    const modifiedXml = serializer.serializeToString(xmlDoc);
+                    response.data = new TextEncoder().encode(modifiedXml).buffer;
+                } catch (err) {
+                    console.error('[Manifest Parsing/Transformation Error]:', err);
+                }
+            };
+
             return requestInfo;
         };
-        playbackConfig.segmentRequestHandler = playbackConfig.manifestRequestHandler;
+
+        playbackConfig.segmentRequestHandler = (requestInfo) => {
+            requestInfo.withCredentials = false;
+            if (activeCustomData && activeCustomData.headers) {
+                requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
+            }
+            return requestInfo;
+        };
 
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            const isHls = contentType.includes('mpegurl') || contentId.includes('.m3u8');
-
-            if (isHls) {
+            // HLS nativo: saltar Shaka y procesar con pipeline nativo del Cast
+            if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
+            // DASH con ClearKey
             config.shakaConfiguration = playbackConfig.shakaConfiguration;
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {}, advanced: {} };
+            config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
 
-            const hasClearKeys = activeCustomData.clearKeys && 
-                                 typeof activeCustomData.clearKeys === 'object' && 
-                                 Object.keys(activeCustomData.clearKeys).length > 0;
-
-            if (hasClearKeys) {
-                config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
-                for (const [keyId, keyVal] of Object.entries(activeCustomData.clearKeys)) {
-                    if (typeof keyVal === 'string') {
-                        config.shakaConfiguration.drm.clearKeys[keyId.replace(/[^a-fA-F0-9]/g, '').toLowerCase()] = keyVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+            if (activeCustomData.clearKeys && typeof activeCustomData.clearKeys === 'object') {
+                for (const [k, v] of Object.entries(activeCustomData.clearKeys)) {
+                    if (typeof v === 'string') {
+                        const cleanKeyId = k.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+                        const cleanKey = v.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
+                        config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
             }
@@ -92,21 +208,21 @@
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
-                // Filtrado defensivo de pistas de audio para evitar el error AUDIO_RENDERER_ERROR (3016)
+                // Filtro dinámico en memoria de pistas de audio
                 try {
                     const tracks = shakaPlayer.getVariantTracks();
                     const cleanTracks = tracks.filter(t => {
                         const codec = (t.audioCodec || '').toLowerCase();
-                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3');
+                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3') && !codec.includes('ac3');
                     });
                     if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
                     }
                 } catch (e) {
-                    console.warn('[AudioFilter Error]', e);
+                    console.warn('[Audio Track Filter Warning]:', e);
                 }
 
-                // Inyección local JWKS
+                // Inyector de licencias simuladas JWKS
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
                     netEngine.registerResponseFilter((type, response) => {
@@ -116,13 +232,13 @@
                                 for (const [kId, kVal] of Object.entries(activeCustomData.clearKeys)) {
                                     keysArray.push({
                                         kty: 'oct',
-                                        kid: hexToBase64Url(kId),
-                                        k: hexToBase64Url(kVal)
+                                        kid: hexToBase64Url(kId.replace(/[^a-fA-F0-9]/g, '').toLowerCase()),
+                                        k: hexToBase64Url(kVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase())
                                     });
                                 }
                                 response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
                             } catch (e) {
-                                console.error('[DRM Error]', e.message);
+                                console.error('[JWKS Injection Error]:', e.message);
                             }
                         }
                     });
@@ -131,7 +247,7 @@
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
-            console.error('[CAF Error Event]', JSON.stringify({
+            console.error('[CAF Event Error]:', JSON.stringify({
                 code: event.detailedErrorCode,
                 error: event.error
             }));
