@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.0.8</title>
+    <title>KoreStream Ultra Receiver - v1.0.9</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,10 +29,10 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.0.8</div>
+    <div id="app-version">KoreStream Receiver v1.0.9</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.0.8';
+        const RECEIVER_VERSION = 'v1.0.9';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
@@ -76,7 +76,7 @@
                 jumpLargeGaps: true,
                 liveIgnoreNtp: true,
                 inaccurateManifestTolerance: 2,
-                bufferingGoal: 6,
+                bufferingGoal: 4,
                 rebufferingGoal: 2,
                 stallEnabled: true,
                 retryParameters: { maxAttempts: 2, timeout: 5000 }
@@ -135,13 +135,23 @@
                             }
                         }
 
-                        mpdNode.setAttribute('minBufferTime', 'PT4S');
+                        // Optimización de buffers para arranque instantáneo
+                        mpdNode.setAttribute('minBufferTime', 'PT2S');
                         const currentBuffer = mpdNode.getAttribute('timeShiftBufferDepth');
                         if (!currentBuffer || currentBuffer.includes('PT30S') || currentBuffer.includes('PT22S')) {
                             mpdNode.setAttribute('timeShiftBufferDepth', 'PT60S');
                         }
                     }
 
+                    // 1. Purga total de subtítulos / texto incompatibles que congelan el pipeline
+                    const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
+                        as.getAttribute('contentType') === 'text' || 
+                        as.getAttribute('mimeType') === 'application/mp4' || 
+                        as.querySelector('Representation[codecs="stpp"]')
+                    );
+                    textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
+
+                    // 2. Saneamiento DRM selectivo
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const isClearKeyStream = keyIds.length > 0;
@@ -152,14 +162,13 @@
                     contentProtections.forEach(cp => {
                         const scheme = (cp.getAttribute('schemeIdUri') || '').toLowerCase();
                         
-                        // Si el stream usa ClearKey, purgamos Widevine, PlayReady y Nagra
                         if (isClearKeyStream) {
-                            const isToPurge = scheme.includes('edef8ba9') || // Widevine
-                                              scheme.includes('9a04f079') || // PlayReady
-                                              scheme.includes('adb41c24') || // Nagra Telefónica
-                                              scheme.includes('adb90c1d') || // Nagra PRM
-                                              scheme.includes('8043001d') || // Nagra Connect
-                                              scheme.includes('1077efec') || // Nagra W3C
+                            const isToPurge = scheme.includes('edef8ba9') ||
+                                              scheme.includes('9a04f079') ||
+                                              scheme.includes('adb41c24') ||
+                                              scheme.includes('adb90c1d') ||
+                                              scheme.includes('8043001d') ||
+                                              scheme.includes('1077efec') ||
                                               scheme.includes('widevine') ||
                                               scheme.includes('playready') ||
                                               scheme.includes('nagra');
@@ -171,7 +180,6 @@
                             const psshNodes = cp.getElementsByTagName('cenc:pssh');
                             Array.from(psshNodes).forEach(p => p.parentNode.removeChild(p));
                         } else {
-                            // Si es Widevine legítimo, purgar únicamente PlayReady y Nagra incompatibles
                             const isUnsupportedDrm = scheme.includes('9a04f079') ||
                                                     scheme.includes('adb41c24') ||
                                                     scheme.includes('adb90c1d') ||
@@ -183,7 +191,6 @@
                         }
                     });
 
-                    // Solo inyectar forzosamente el mp4protection si es ClearKey
                     if (isClearKeyStream && uuidKid) {
                         const adaptationSets = xmlDoc.getElementsByTagName('AdaptationSet');
                         Array.from(adaptationSets).forEach(as => {
@@ -200,7 +207,7 @@
                         });
                     }
 
-                    // Filtrado de audio incompatible
+                    // 3. Filtrado de audio incompatible
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
@@ -219,7 +226,7 @@
                         }
                     });
 
-                    // Normalización de idioma
+                    // 4. Normalización de idioma
                     const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
                     allAdaptationSets.forEach(as => {
                         const lang = as.getAttribute('lang');
@@ -275,7 +282,6 @@
                     }
                 }
             } else if (activeCustomData.licenseUrl) {
-                // Configuración para Widevine nativo con servidor de licencias
                 config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseUrl;
             }
