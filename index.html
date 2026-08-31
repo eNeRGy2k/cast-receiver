@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.1.0</title>
+    <title>KoreStream Ultra Receiver - v1.1.1</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,10 +29,10 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.1.0</div>
+    <div id="app-version">KoreStream Receiver v1.1.1</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.1.0';
+        const RECEIVER_VERSION = 'v1.1.1';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
@@ -55,6 +55,7 @@
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
+        let isErrorLoopActive = false;
 
         function notifySenderFatalError(reason, code) {
             try {
@@ -142,7 +143,7 @@
                         }
                     }
 
-                    // 1. Purga total de subtítulos STPP
+                    // Purga de texto/subtítulos STPP
                     const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         as.getAttribute('contentType') === 'text' || 
                         as.getAttribute('mimeType') === 'application/mp4' || 
@@ -150,7 +151,7 @@
                     );
                     textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
 
-                    // 2. Saneamiento DRM selectivo
+                    // Saneamiento DRM selectivo
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const isClearKeyStream = keyIds.length > 0;
@@ -206,7 +207,7 @@
                         });
                     }
 
-                    // 3. Filtrado de audio incompatible
+                    // Filtrado de audio incompatible
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
@@ -225,7 +226,7 @@
                         }
                     });
 
-                    // 4. Normalización de idioma
+                    // Normalización de idioma
                     const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
                     allAdaptationSets.forEach(as => {
                         const lang = as.getAttribute('lang');
@@ -258,13 +259,8 @@
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
 
-            // Si es el vídeo de respaldo estático (niebla), forzar loop en el elemento de vídeo nativo
-            if (contentId.includes('static_tv.mp4')) {
-                const videoElement = document.querySelector('video');
-                if (videoElement) {
-                    videoElement.loop = true;
-                }
-            }
+            // Detectar vídeo de respaldo estático (niebla)
+            isErrorLoopActive = contentId.includes('static_tv.mp4');
 
             if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
                 config.shakaConfiguration = null;
@@ -294,6 +290,17 @@
             }
 
             return config;
+        });
+
+        // Bucle infinito garantizado para la niebla
+        playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
+            if (isErrorLoopActive) {
+                console.log('[KoreStream] Reiniciando bucle de niebla');
+                setTimeout(() => {
+                    playerManager.seek(0);
+                    playerManager.play();
+                }, 50);
+            }
         });
 
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
