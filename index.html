@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.3.2</title>
+    <title>KoreStream Ultra Receiver - v1.3.3</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,10 +29,10 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.3.2</div>
+    <div id="app-version">KoreStream Receiver v1.3.3</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.3.2';
+        const RECEIVER_VERSION = 'v1.3.3';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
@@ -83,8 +83,10 @@
                     const isSupported = MediaSource.isTypeSupported(
                         `video/mp4; codecs="${codec}"`
                     );
+                    console.log(`[CODEC-VALIDATION] ${codec}: ${isSupported ? 'SOPORTADO' : 'NO SOPORTADO'}`);
                     return isSupported;
                 } catch (e) {
+                    console.warn(`[CODEC-VALIDATION] Error validando ${codec}:`, e);
                     return false;
                 }
             });
@@ -122,6 +124,7 @@
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             if (!cleanHex || cleanHex.length === 0) {
+                console.error('[UTIL] hexToBase64Url: string vacío o inválido');
                 return '';
             }
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -135,6 +138,7 @@
         function formatKidToUuid(hexKid) {
             const clean = hexKid.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
             if (clean.length !== 32) {
+                console.warn('[UTIL] KID no es UUID válido (32 hex esperados):', hexKid);
                 return hexKid;
             }
             return `${clean.slice(0,8)}-${clean.slice(8,12)}-${clean.slice(12,16)}-${clean.slice(16,20)}-${clean.slice(20)}`;
@@ -144,9 +148,16 @@
             const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
             if (mpdNode) {
                 const mpdType = mpdNode.getAttribute('type');
-                if (mpdType === 'dynamic') return 'live';
-                if (mpdType === 'static') return 'vod';
+                if (mpdType === 'dynamic') {
+                    console.log('[STREAM-TYPE] LIVE detectado via MPD@type=dynamic (estándar DASH)');
+                    return 'live';
+                }
+                if (mpdType === 'static') {
+                    console.log('[STREAM-TYPE] VOD detectado via MPD@type=static (estándar DASH)');
+                    return 'vod';
+                }
             }
+            console.warn('[STREAM-TYPE] MPD@type no encontrado, asumiendo VOD');
             return 'vod';
         }
 
@@ -160,9 +171,6 @@
         let isErrorLoopActive = false;
         let currentStreamType = 'vod';
         
-        // =====================================================================
-        // BUCLE DE NIEBLA + STALL DETECTION
-        // =====================================================================
         let fogLoopRetries = 0;
         const MAX_FOG_LOOP_RETRIES = 10;
         let fogLoopTimeout = null;
@@ -178,6 +186,7 @@
                     code: code,
                     timestamp: new Date().toISOString()
                 });
+                console.log(`[CustomChannel] Mensaje enviado: ${reason} (código ${code})`);
             } catch (e) {
                 console.warn('[CustomChannel] Error enviando mensaje:', e);
             }
@@ -239,7 +248,7 @@
         };
 
         // =====================================================================
-        // MANIFEST REQUEST HANDLER - PURGA SEGURA DE CODECS
+        // MANIFEST REQUEST HANDLER - PURGA SEGURA DE CODECS Y DRM
         // =====================================================================
         
         playbackConfig.manifestRequestHandler = (requestInfo) => {
@@ -249,20 +258,20 @@
                 requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
             }
 
-            // ✨ v1.3.2 PARCHE CRÍTICO 1: Descodificar URL para que el proxy Android no salte el filtro
-            const safeUrl = decodeURIComponent(decodeURIComponent(requestInfo.url)).toLowerCase();
-            if (!safeUrl.includes('.mpd') && !safeUrl.includes('dash')) {
-                return requestInfo;
-            }
-
             const originalModifyResponse = requestInfo.modifyResponse;
             requestInfo.modifyResponse = (response) => {
                 if (originalModifyResponse) originalModifyResponse(response);
 
                 try {
-                    const rawXml = new TextDecoder('utf-8').decode(response.data);
+                    const rawText = new TextDecoder('utf-8').decode(response.data);
+
+                    // ✨ PARCHE 1: Verificamos si es DASH leyendo el contenido en lugar de la URL
+                    if (!rawText.includes('<MPD') && !rawText.includes('<mpd')) {
+                        return; // No es DASH, no lo procesamos
+                    }
+
                     const parser = new DOMParser();
-                    const xmlDoc = parser.parseFromString(rawXml, 'application/xml');
+                    const xmlDoc = parser.parseFromString(rawText, 'application/xml');
 
                     currentStreamType = detectStreamTypeFromManifest(xmlDoc);
 
@@ -281,6 +290,7 @@
                                 const pubDate = pubTimeStr ? new Date(pubTimeStr) : new Date();
                                 const newAst = new Date(pubDate.getTime() - 120000).toISOString();
                                 mpdNode.setAttribute('availabilityStartTime', newAst);
+                                console.log('[MANIFEST] AST corregido:', newAst);
                             }
                         }
 
@@ -301,11 +311,14 @@
                     const isShakaOld = shakaMajor < 3 || (shakaMajor === 3 && shakaMinor < 2);
 
                     if (isShakaOld) {
+                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (VIEJO). Removiendo STPP...`);
                         const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                             as.getAttribute('contentType') === 'text' || 
                             as.querySelector('Representation[codecs="stpp"]')
                         );
                         textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
+                    } else {
+                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (MODERNO). Permitiendo STPP...`);
                     }
 
                     // DRM HANDLING
@@ -314,6 +327,13 @@
                     const isClearKeyStream = keyIds.length > 0;
                     const firstKid = isClearKeyStream ? keyIds[0] : null;
                     const uuidKid = firstKid ? formatKidToUuid(firstKid) : null;
+
+                    if (isClearKeyStream && uuidKid) {
+                        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+                        if (!uuidRegex.test(uuidKid)) {
+                            console.error('[DRM-CLEARKEY] KID mal formado. Puede causar fallo:', uuidKid);
+                        }
+                    }
 
                     const contentProtections = Array.from(xmlDoc.getElementsByTagName('ContentProtection'));
                     contentProtections.forEach(cp => {
@@ -342,11 +362,10 @@
                         }
                     });
 
-                    // ✨ v1.3.2 PARCHE CRÍTICO 2: Inyectar ClearKey estándar del W3C para evitar fallo 6012
+                    // ✨ PARCHE 2: Inyección W3C ClearKey (Evita fallback fantasma a Widevine)
                     if (isClearKeyStream && uuidKid) {
                         const adaptationSets = xmlDoc.getElementsByTagName('AdaptationSet');
                         Array.from(adaptationSets).forEach(as => {
-                            // 1. Inyectar W3C ClearKey System
                             let w3cProt = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
                                 (cp.getAttribute('schemeIdUri') || '').toLowerCase().includes('e2719d58')
                             );
@@ -357,7 +376,6 @@
                                 as.insertBefore(w3cProt, as.firstChild);
                             }
 
-                            // 2. Inyectar mp4protection
                             let mp4Prot = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
                                 (cp.getAttribute('schemeIdUri') || '').includes('urn:mpeg:dash:mp4protection:2011')
                             );
@@ -386,12 +404,16 @@
                                 if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || 
                                     codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
                                     rep.parentNode.removeChild(rep);
+                                    console.log('[AUDIO] AC-3/E-AC-3 REMOVIDO');
                                 }
                             });
+                        } else if (CURRENT_DEVICE === DEVICE_TYPE.SHIELD) {
+                            console.log('[AUDIO] Shield: AC-3/E-AC-3 permitido');
                         }
 
                         if (as.getElementsByTagName('Representation').length === 0) {
                             as.parentNode.removeChild(as);
+                            console.log('[AUDIO] AdaptationSet vacío removido');
                         }
                     });
 
@@ -407,6 +429,7 @@
                     const serializer = new XMLSerializer();
                     const modifiedXml = serializer.serializeToString(xmlDoc);
                     response.data = new TextEncoder().encode(modifiedXml).buffer;
+                    console.log('[MANIFEST] Purga de XML y DRM completada con éxito.');
                 } catch (err) {
                     console.error('[Manifest Parsing Error]', err);
                 }
@@ -444,7 +467,7 @@
             }
 
             config.shakaConfiguration = Object.assign({}, playbackConfig.shakaConfiguration);
-            // ✨ v1.3.2 PARCHE CRÍTICO 3: Clonar el objeto drm para no destruir los retryParameters
+            // ✨ PARCHE 3: Clonar el objeto drm para no destruir los retryParameters
             config.shakaConfiguration.drm = Object.assign({}, playbackConfig.shakaConfiguration.drm);
             config.shakaConfiguration.drm.clearKeys = {};
             config.shakaConfiguration.drm.servers = {};
@@ -453,10 +476,12 @@
                 config.shakaConfiguration.streaming.bufferingGoal = 3;
                 config.shakaConfiguration.streaming.rebufferingGoal = 1.5;
                 config.shakaConfiguration.streaming.preferLiveSegments = true;
+                console.log('[BUFFER] LIVE: 3s/1.5s');
             } else {
                 config.shakaConfiguration.streaming.bufferingGoal = 10;
                 config.shakaConfiguration.streaming.rebufferingGoal = 4;
                 config.shakaConfiguration.streaming.preferLiveSegments = false;
+                console.log('[BUFFER] VOD: 10s/4s');
             }
 
             const hasClearKeys = activeCustomData.clearKeys && 
@@ -471,14 +496,18 @@
                         const cleanKey = v.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         
                         if (!cleanKeyId || !cleanKey) {
+                            console.error('[DRM-CLEARKEY] KID o KEY vacío después de limpiar:', k, v);
                             continue;
                         }
+                        
                         config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
+                console.log(`[DRM-CLEARKEY] ${Object.keys(config.shakaConfiguration.drm.clearKeys).length} claves configuradas`);
             } else if (activeCustomData.licenseUrl) {
                 config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseUrl;
+                console.log('[DRM-WIDEVINE] License Server:', activeCustomData.licenseUrl);
             }
 
             return config;
@@ -491,6 +520,7 @@
         playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
             if (isErrorLoopActive) {
                 fogLoopRetries++;
+                console.log(`[FOG-LOOP] Video terminó. Reinicio #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
                 
                 if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
                     fogLoopTimeout = setTimeout(() => {
@@ -498,6 +528,7 @@
                         playerManager.play();
                     }, 50);
                 } else {
+                    console.error('[FOG-LOOP] MÁXIMO DE REINTENTOS ALCANZADO. Deteniendo.');
                     isErrorLoopActive = false;
                     notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
                 }
@@ -517,7 +548,9 @@
                     if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
                     }
-                } catch (e) {}
+                } catch (e) {
+                    console.warn('[Audio Track Filter Warning]', e);
+                }
 
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
@@ -525,16 +558,21 @@
                         if (activeCustomData && activeCustomData.headers) {
                             Object.assign(request.headers, activeCustomData.headers);
                         }
+                        
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
                             if (activeCustomData && activeCustomData.drmHeaders) {
                                 Object.assign(request.headers, activeCustomData.drmHeaders);
+                                console.log('[DRM-HEADERS] Cabeceras Widevine DRM inyectadas en licencia');
                             }
                         }
                     });
 
                     netEngine.registerResponseFilter((type, response) => {
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
+                            console.log(`[LICENSE-RESPONSE] Status: ${response.status}`);
+                            
                             if (response.status === 401 || response.status === 403) {
+                                console.error(`[DRM] Error ${response.status} - Autenticación fallida en servidor de licencias`);
                                 notifySenderFatalError('DRM_LICENSE_AUTH_ERROR', response.status);
                             }
                             
@@ -547,6 +585,7 @@
                                         const cleanKVal = kVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                                         
                                         if (!cleanKId.match(/^[0-9a-f]+$/) || !cleanKVal.match(/^[0-9a-f]+$/)) {
+                                            console.error(`[ClearKey] KID o KEY inválido (hex esperado):`, cleanKId, cleanKVal);
                                             continue;
                                         }
                                         
@@ -556,8 +595,15 @@
                                             k: hexToBase64Url(cleanKVal)
                                         });
                                     }
+                                    
+                                    if (keysArray.length === 0) {
+                                        console.error('[ClearKey] Ninguna clave válida. Licencia será vacía.');
+                                    }
+                                    
                                     response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
+                                    console.log('[ClearKey] JWKS formateado correctamente');
                                 } catch (e) {
+                                    console.error('[ClearKey] Error formateando JWKS:', e.message);
                                     notifySenderFatalError('CLEARKEY_FORMAT_ERROR', 8001);
                                 }
                             }
@@ -575,12 +621,15 @@
             if (!error) return;
 
             const shakaCode = error.shakaErrorCode;
+            
             if (!shakaCode) return; 
 
             console.error(`[ERROR] Shaka Code: ${shakaCode}`);
 
             if (isErrorLoopActive) {
                 fogLoopRetries++;
+                console.warn(`[FOG-LOOP] Error ${shakaCode}. Reintento #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
+                
                 if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
                     fogLoopTimeout = setTimeout(() => {
                         playerManager.seek(0);
@@ -588,6 +637,7 @@
                     }, 1000);
                     return;
                 } else {
+                    console.error('[FOG-LOOP] Máximo de reintentos alcanzado');
                     isErrorLoopActive = false;
                     notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
                     return;
@@ -596,7 +646,10 @@
 
             if (shakaCode === 4015) { 
                 stallRetries++;
+                console.warn(`[STALL] Buffer atascado. Reintento ${stallRetries}/${MAX_STALL_RETRIES}`);
+                
                 if (stallRetries >= MAX_STALL_RETRIES) {
+                    console.error('[STALL] Bucle infinito de buffer detectado');
                     notifySenderFatalError('BUFFER_STALL_LOOP', 4015);
                     playerManager.stop();
                 }
@@ -612,18 +665,38 @@
 
             if (FATAL_CODES.includes(shakaCode)) {
                 console.error(`[CRITICAL] Error irrecuperable (${shakaCode}). Deteniendo reproducción.`);
+                
                 let errorReason = 'FATAL_ERROR';
                 if (shakaCode >= 6000 && shakaCode <= 6099) {
                     errorReason = 'DRM_ERROR';
                 }
+                
                 notifySenderFatalError(errorReason, shakaCode);
                 playerManager.stop();
             } else {
-                console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos de Shaka...`);
+                console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos automáticos de Shaka...`);
             }
         });
 
         context.start({ playbackConfig: playbackConfig });
+
+        // =====================================================================
+        // LOGGING DE INICIALIZACIÓN
+        // =====================================================================
+        console.log(`
+╔════════════════════════════════════════════════════════════════╗
+║   KoreStream Receiver v1.3.3 - Inicialización OK               ║
+╠════════════════════════════════════════════════════════════════╣
+║ Dispositivo: ${CURRENT_DEVICE.padEnd(54)}║
+║ Codecs Video: ${getVideoCodecPreferences(CURRENT_DEVICE).join(', ').padEnd(49)}║
+║ Codecs Audio: AAC (AC-3 filtrado por seguridad)                ║
+║ Live Detection: MPD@type (DASH RFC 6235)                       ║
+║ Custom Channel: ${CUSTOM_CHANNEL.padEnd(50)}║
+║ Fog Loop: ENABLED (máx ${MAX_FOG_LOOP_RETRIES} reintentos)                 ║
+║ Stall Detection: ENABLED (máx ${MAX_STALL_RETRIES} stalleos)               ║
+║ DRM Headers: ENABLED (Widevine vía requestFilter)              ║
+╚════════════════════════════════════════════════════════════════╝
+        `);
     </script>
 </body>
 </html>
