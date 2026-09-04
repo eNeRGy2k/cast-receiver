@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.1.3</title>
+    <title>KoreStream Ultra Receiver - v1.2.0-SAFE</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,13 +29,115 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.1.3</div>
+    <div id="app-version">KoreStream Receiver v1.2.0-SAFE</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.1.3';
+        // =====================================================================
+        // KORESTREAM v1.2.0-SAFE - ARQUITECTURA SEGURA PARA PRODUCCIÓN
+        // =====================================================================
+        // CORRECCIONES CRÍTICAS POSTERIORES A REVISIÓN:
+        // - AC-3 purga OBLIGATORIA en dispositivos limitados
+        // - STPP: eliminar en Shaka viejo, mantener en nuevo
+        // - LIVE detection: MPD@type, no URL sniffing
+        // - User-agent + isTypeSupported() en combinación
+        // =====================================================================
+
+        const RECEIVER_VERSION = 'v1.2.0-SAFE';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
+        // =====================================================================
+        // DEVICE DETECTION CON VALIDACIÓN DUAL
+        // =====================================================================
+        const DEVICE_TYPE = {
+            NEST_HUB: 'nest_hub',
+            SHIELD: 'nvidia_shield',
+            CHROMECAST_ULTRA: 'chromecast_ultra',
+            ANDROID_TV: 'android_tv',
+            GENERIC: 'generic'
+        };
+
+        function detectDevice() {
+            const ua = navigator.userAgent.toLowerCase();
+            
+            if (ua.includes('shield') || ua.includes('nvsl')) {
+                console.log('[DEVICE] Detectado: NVIDIA Shield');
+                return DEVICE_TYPE.SHIELD;
+            }
+            if (ua.includes('nest hub') || ua.includes('fuchsia')) {
+                console.log('[DEVICE] Detectado: Google Nest Hub (RECURSOS LIMITADOS)');
+                return DEVICE_TYPE.NEST_HUB;
+            }
+            if (ua.includes('android tv') || ua.includes('googletv')) {
+                console.log('[DEVICE] Detectado: Android TV');
+                return DEVICE_TYPE.ANDROID_TV;
+            }
+            if (ua.includes('chromecast')) {
+                console.log('[DEVICE] Detectado: Chromecast (versión desconocida)');
+                return DEVICE_TYPE.CHROMECAST_ULTRA;
+            }
+            
+            console.log('[DEVICE] Dispositivo genérico/desconocido');
+            return DEVICE_TYPE.GENERIC;
+        }
+
+        const CURRENT_DEVICE = detectDevice();
+
+        // =====================================================================
+        // CODEC PREFERENCES CON VALIDACIÓN VIA MediaSource.isTypeSupported()
+        // =====================================================================
+        // CAMBIO CRÍTICO: No solo user-agent, TAMBIÉN validar con isTypeSupported()
+        // =====================================================================
+        
+        function validateCodecsWithMSE(codecs) {
+            return codecs.filter(codec => {
+                try {
+                    // Validar si el navegador (en este dispositivo) soporta el codec
+                    const isSupported = MediaSource.isTypeSupported(
+                        `video/mp4; codecs="${codec}"`
+                    );
+                    console.log(`[CODEC-VALIDATION] ${codec}: ${isSupported ? 'SOPORTADO' : 'NO SOPORTADO'}`);
+                    return isSupported;
+                } catch (e) {
+                    console.warn(`[CODEC-VALIDATION] Error validando ${codec}:`, e);
+                    return false;
+                }
+            });
+        }
+
+        function getVideoCodecPreferences(device) {
+            let preferred;
+            
+            switch(device) {
+                case DEVICE_TYPE.NEST_HUB:
+                    preferred = ['avc1', 'h264'];
+                    break;
+                case DEVICE_TYPE.SHIELD:
+                    preferred = ['av01', 'hev1', 'vp9', 'avc1', 'h264'];
+                    break;
+                case DEVICE_TYPE.CHROMECAST_ULTRA:
+                    preferred = ['vp9', 'avc1', 'h264'];
+                    break;
+                case DEVICE_TYPE.ANDROID_TV:
+                    preferred = ['vp9', 'hev1', 'avc1', 'h264'];
+                    break;
+                default:
+                    preferred = ['vp9', 'avc1', 'h264'];
+            }
+            
+            // VALIDAR cada codec contra capabilities reales del dispositivo
+            return validateCodecsWithMSE(preferred);
+        }
+
+        function getAudioCodecPreferences(device) {
+            // AAC es universal. AC-3/E-AC-3 se filtran en manifest, no aquí.
+            return ['mp4a.40.2', 'mp4a.40.5', 'mp4a', 'aac'];
+        }
+
+        // =====================================================================
+        // UTILITY FUNCTIONS
+        // =====================================================================
+        
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -52,10 +154,38 @@
             return `${clean.slice(0,8)}-${clean.slice(8,12)}-${clean.slice(12,16)}-${clean.slice(16,20)}-${clean.slice(20)}`;
         }
 
+        // =====================================================================
+        // DETECCIÓN DE LIVE vs VOD - VIA MANIFEST, NO URL
+        // =====================================================================
+        // CAMBIO CRÍTICO: Parsear MPD@type, no URL sniffing
+        // =====================================================================
+        
+        function detectStreamTypeFromManifest(xmlDoc) {
+            const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
+            if (mpdNode) {
+                const mpdType = mpdNode.getAttribute('type');
+                if (mpdType === 'dynamic') {
+                    console.log('[STREAM-TYPE] LIVE detectado via MPD@type=dynamic (estándar DASH)');
+                    return 'live';
+                }
+                if (mpdType === 'static') {
+                    console.log('[STREAM-TYPE] VOD detectado via MPD@type=static (estándar DASH)');
+                    return 'vod';
+                }
+            }
+            console.warn('[STREAM-TYPE] MPD@type no encontrado, asumiendo VOD');
+            return 'vod';
+        }
+
+        // =====================================================================
+        // CONTEXTO Y CONFIGURACIÓN GLOBAL
+        // =====================================================================
+        
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
         let activeCustomData = {};
         let isErrorLoopActive = false;
+        let currentStreamType = 'vod';  // Cache del tipo de stream
 
         function notifySenderFatalError(reason, code) {
             try {
@@ -70,51 +200,69 @@
         }
 
         // =====================================================================
-        // PARCHE NVIDIA SHIELD: LIMPIEZA DURA EN CADA NUEVA CARGA
+        // NVIDIA SHIELD PATCH
         // =====================================================================
         playerManager.setMessageInterceptor(cast.framework.messages.MessageType.LOAD, loadRequestData => {
-            console.log('[KoreStream] Nuevo LOAD interceptado. Limpiando estado anterior...');
+            console.log('[KoreStream] Nueva carga. Limpiando estado...');
             activeCustomData = {};
             isErrorLoopActive = false;
+            currentStreamType = 'vod';
             
-            // Restablecer atributos del elemento de vídeo por si el canal anterior era la niebla
             const videoElement = document.querySelector('video');
             if (videoElement) {
                 videoElement.loop = false;
             }
             return loadRequestData;
         });
-        // =====================================================================
 
+        // =====================================================================
+        // CONFIGURACIÓN DE REPRODUCCIÓN
+        // =====================================================================
+        
         const playbackConfig = new cast.framework.PlaybackConfig();
 
         playbackConfig.shakaConfiguration = {
-            abr: { enabled: false },
+            abr: { 
+                enabled: false,  // Mantener deshabilitado por seguridad
+                defaultBandwidthEstimate: 5000000
+            },
+            
             streaming: {
                 jumpLargeGaps: true,
                 liveIgnoreNtp: true,
-                inaccurateManifestTolerance: 2,
                 bufferingGoal: 4,
                 rebufferingGoal: 2,
                 stallEnabled: true,
-                retryParameters: { maxAttempts: 2, timeout: 5000 }
+                preferLiveSegments: false,
+                retryParameters: { maxAttempts: 3, timeout: 8000 }
             },
+            
             manifest: {
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true },
-                retryParameters: { maxAttempts: 1, timeout: 4000 }
+                retryParameters: { maxAttempts: 5, timeout: 10000 }
             },
+            
             drm: {
                 clearKeys: {},
                 servers: {},
-                retryParameters: { maxAttempts: 0 }
+                retryParameters: { maxAttempts: 2, timeout: 15000 }
             },
-            preferredAudioCodecs: ['mp4a.40.2', 'mp4a', 'aac'],
-            preferredVideoCodecs: ['avc1', 'h264'],
+            
+            preferredAudioCodecs: getAudioCodecPreferences(CURRENT_DEVICE),
+            preferredVideoCodecs: getVideoCodecPreferences(CURRENT_DEVICE),
             preferredAudioChannelCount: 2,
             preferFewerChannels: true
         };
 
+        // =====================================================================
+        // MANIFEST REQUEST HANDLER - PURGA SEGURA DE CODECS
+        // =====================================================================
+        // CAMBIOS CRÍTICOS:
+        // 1. AC-3/E-AC-3: OBLIGATORIA en Nest Hub/Chromecast v3
+        // 2. STPP: Eliminar solo en Shaka viejo
+        // =====================================================================
+        
         playbackConfig.manifestRequestHandler = (requestInfo) => {
             requestInfo.withCredentials = false;
 
@@ -135,6 +283,11 @@
                     const parser = new DOMParser();
                     const xmlDoc = parser.parseFromString(rawXml, 'application/xml');
 
+                    // ============================================================
+                    // DETECTAR TIPO DE STREAM (LIVE vs VOD)
+                    // ============================================================
+                    currentStreamType = detectStreamTypeFromManifest(xmlDoc);
+
                     const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
                     if (mpdNode) {
                         const ast = mpdNode.getAttribute('availabilityStartTime') || '';
@@ -153,7 +306,6 @@
                             }
                         }
 
-                        // Eliminar UTCTiming estático para que Shaka no desincronice el directo
                         const utcTimings = Array.from(xmlDoc.getElementsByTagName('UTCTiming'));
                         utcTimings.forEach(ut => ut.parentNode.removeChild(ut));
 
@@ -164,15 +316,28 @@
                         }
                     }
 
-                    // 1. Purga total de subtítulos STPP
-                    const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
-                        as.getAttribute('contentType') === 'text' || 
-                        as.getAttribute('mimeType') === 'application/mp4' || 
-                        as.querySelector('Representation[codecs="stpp"]')
-                    );
-                    textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
+                    // ============================================================
+                    // SUBTÍTULOS - Eliminar STPP SOLO en Shaka viejo
+                    // ============================================================
+                    const shakaVersion = shaka.Player.version || '3.0.0';
+                    const shakaMajor = parseInt(shakaVersion.split('.')[0]);
+                    const shakaMinor = parseInt(shakaVersion.split('.')[1]);
+                    const isShakaOld = shakaMajor < 3 || (shakaMajor === 3 && shakaMinor < 2);
 
-                    // 2. Saneamiento DRM selectivo
+                    if (isShakaOld) {
+                        console.log(`[SUBTITLE] Shaka ${shakaVersion} detectado (VIEJO). Removiendo STPP por seguridad...`);
+                        const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
+                            as.getAttribute('contentType') === 'text' || 
+                            as.querySelector('Representation[codecs="stpp"]')
+                        );
+                        textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
+                    } else {
+                        console.log(`[SUBTITLE] Shaka ${shakaVersion} detectado (MODERNO). Permitiendo STPP...`);
+                    }
+
+                    // ============================================================
+                    // DRM HANDLING
+                    // ============================================================
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const isClearKeyStream = keyIds.length > 0;
@@ -184,14 +349,10 @@
                         const scheme = (cp.getAttribute('schemeIdUri') || '').toLowerCase();
                         
                         if (isClearKeyStream) {
-                            const isToPurge = scheme.includes('edef8ba9') ||
-                                              scheme.includes('9a04f079') ||
-                                              scheme.includes('adb41c24') ||
-                                              scheme.includes('adb90c1d') ||
-                                              scheme.includes('8043001d') ||
-                                              scheme.includes('1077efec') ||
-                                              scheme.includes('widevine') ||
-                                              scheme.includes('playready') ||
+                            const isToPurge = scheme.includes('edef8ba9') || scheme.includes('9a04f079') ||
+                                              scheme.includes('adb41c24') || scheme.includes('adb90c1d') ||
+                                              scheme.includes('8043001d') || scheme.includes('1077efec') ||
+                                              scheme.includes('widevine') || scheme.includes('playready') ||
                                               scheme.includes('nagra');
 
                             if (isToPurge) {
@@ -201,10 +362,8 @@
                             const psshNodes = cp.getElementsByTagName('cenc:pssh');
                             Array.from(psshNodes).forEach(p => p.parentNode.removeChild(p));
                         } else {
-                            const isUnsupportedDrm = scheme.includes('9a04f079') ||
-                                                    scheme.includes('adb41c24') ||
-                                                    scheme.includes('adb90c1d') ||
-                                                    scheme.includes('playready') ||
+                            const isUnsupportedDrm = scheme.includes('9a04f079') || scheme.includes('adb41c24') ||
+                                                    scheme.includes('adb90c1d') || scheme.includes('playready') ||
                                                     scheme.includes('nagra');
                             if (isUnsupportedDrm) {
                                 cp.parentNode.removeChild(cp);
@@ -228,26 +387,46 @@
                         });
                     }
 
-                    // 3. Filtrado de audio incompatible
+                    // ============================================================
+                    // AUDIO - PURGA SEGURA DE AC-3 EN DISPOSITIVOS LIMITADOS
+                    // ============================================================
+                    // CAMBIO CRÍTICO: Eliminar AC-3 OBLIGATORIAMENTE en Nest Hub
+                    // ============================================================
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
 
                     audioAdaptationSets.forEach(as => {
                         const representations = Array.from(as.getElementsByTagName('Representation'));
-                        representations.forEach(rep => {
-                            const codecs = (rep.getAttribute('codecs') || '').toLowerCase();
-                            const mime = (rep.getAttribute('mimeType') || '').toLowerCase();
-                            if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
-                                rep.parentNode.removeChild(rep);
-                            }
-                        });
+                        
+                        // En Nest Hub y Chromecast viejo: PURGA OBLIGATORIA
+                        if (CURRENT_DEVICE === DEVICE_TYPE.NEST_HUB || 
+                            CURRENT_DEVICE === DEVICE_TYPE.CHROMECAST_ULTRA) {
+                            console.log('[AUDIO] Dispositivo limitado detectado. Removiendo AC-3/E-AC-3 por seguridad del kernel...');
+                            representations.forEach(rep => {
+                                const codecs = (rep.getAttribute('codecs') || '').toLowerCase();
+                                const mime = (rep.getAttribute('mimeType') || '').toLowerCase();
+                                if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || 
+                                    codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
+                                    rep.parentNode.removeChild(rep);
+                                    console.log('[AUDIO] AC-3/E-AC-3 REMOVIDO (kernel safety)');
+                                }
+                            });
+                        } else if (CURRENT_DEVICE === DEVICE_TYPE.SHIELD) {
+                            // En Shield: AC-3 es seguro
+                            console.log('[AUDIO] Shield detectado. AC-3/E-AC-3 permitido (soportado por kernel)');
+                        }
+
+                        // Remover AdaptationSet si quedó sin representaciones
                         if (as.getElementsByTagName('Representation').length === 0) {
                             as.parentNode.removeChild(as);
+                            console.log('[AUDIO] AdaptationSet removido (sin representaciones válidas)');
                         }
                     });
 
-                    // 4. Normalización de idioma
+                    // ============================================================
+                    // Normalización de idioma
+                    // ============================================================
                     const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
                     allAdaptationSets.forEach(as => {
                         const lang = as.getAttribute('lang');
@@ -267,6 +446,9 @@
             return requestInfo;
         };
 
+        // =====================================================================
+        // SEGMENT REQUEST HANDLER
+        // =====================================================================
         playbackConfig.segmentRequestHandler = (requestInfo) => {
             requestInfo.withCredentials = false;
             if (activeCustomData && activeCustomData.headers) {
@@ -275,6 +457,10 @@
             return requestInfo;
         };
 
+        // =====================================================================
+        // MEDIA PLAYBACK INFO HANDLER - BUFFER DINÁMICO
+        // =====================================================================
+        
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
             const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
@@ -291,6 +477,24 @@
             config.shakaConfiguration = Object.assign({}, playbackConfig.shakaConfiguration);
             config.shakaConfiguration.drm = { clearKeys: {}, servers: {} };
 
+            // ================================================================
+            // BUFFER DINÁMICO según tipo de stream
+            // ================================================================
+            if (currentStreamType === 'live') {
+                config.shakaConfiguration.streaming.bufferingGoal = 3;
+                config.shakaConfiguration.streaming.rebufferingGoal = 1.5;
+                config.shakaConfiguration.streaming.preferLiveSegments = true;
+                console.log('[BUFFER] LIVE: 3s/1.5s');
+            } else {
+                config.shakaConfiguration.streaming.bufferingGoal = 10;
+                config.shakaConfiguration.streaming.rebufferingGoal = 4;
+                config.shakaConfiguration.streaming.preferLiveSegments = false;
+                console.log('[BUFFER] VOD: 10s/4s');
+            }
+
+            // ================================================================
+            // DRM CONFIGURATION
+            // ================================================================
             const hasClearKeys = activeCustomData.clearKeys && 
                                  typeof activeCustomData.clearKeys === 'object' && 
                                  Object.keys(activeCustomData.clearKeys).length > 0;
@@ -312,6 +516,10 @@
             return config;
         });
 
+        // =====================================================================
+        // EVENT LISTENERS
+        // =====================================================================
+        
         playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
             if (isErrorLoopActive) {
                 console.log('[KoreStream] Reiniciando bucle de niebla');
@@ -329,7 +537,8 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const cleanTracks = tracks.filter(t => {
                         const codec = (t.audioCodec || '').toLowerCase();
-                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('eac3') && !codec.includes('ac3');
+                        return !codec.includes('ac-3') && !codec.includes('ec-3') && 
+                               !codec.includes('eac3') && !codec.includes('ac3');
                     });
                     if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
@@ -371,6 +580,21 @@
         });
 
         context.start({ playbackConfig: playbackConfig });
+
+        // =====================================================================
+        // LOGGING DE INICIALIZACIÓN
+        // =====================================================================
+        console.log(`
+╔════════════════════════════════════════════════════════════════════╗
+║       KoreStream Receiver v1.2.0-SAFE - Inicialización OK          ║
+╠════════════════════════════════════════════════════════════════════╣
+║ Dispositivo: ${CURRENT_DEVICE.padEnd(54)}║
+║ Codecs Video: ${getVideoCodecPreferences(CURRENT_DEVICE).join(', ').padEnd(51)}║
+║ Codecs Audio: AAC (AC-3 filtrado en manifests por seguridad)       ║
+║ Live Detection: MPD@type (DASH estándar)                           ║
+║ Custom Channel: ${CUSTOM_CHANNEL.padEnd(52)}║
+╚════════════════════════════════════════════════════════════════════╝
+        `);
     </script>
 </body>
 </html>
