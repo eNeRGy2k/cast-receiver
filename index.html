@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.3.0-ENTERPRISE</title>
+    <title>KoreStream Ultra Receiver - v1.3.1</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,7 +29,7 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.3.0-ENTERPRISE</div>
+    <div id="app-version">KoreStream Receiver v1.3.1E</div>
 
     <script>
         // =====================================================================
@@ -46,7 +46,7 @@
         // - ✨ NUEVO v1.3.0: Detección de bucles de Stall (buffer infinito)
         // =====================================================================
 
-        const RECEIVER_VERSION = 'v1.3.0-ENTERPRISE';
+        const RECEIVER_VERSION = 'v1.3.1';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
@@ -666,17 +666,20 @@
             }
         });
 
-        // =====================================================================
-        // ✨ v1.3.0: ERROR HANDLER - Por SEVERIDAD (no por códigos)
+// =====================================================================
+        // ✨ v1.3.1: ERROR HANDLER CORREGIDO - Código estricto, sin falsos positivos
         // =====================================================================
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             const error = event.error;
             if (!error) return;
 
             const shakaCode = error.shakaErrorCode;
-            const severity = error.severity;
             
-            console.error(`[ERROR] Código: ${shakaCode}, Severidad: ${severity}`);
+            // Si el error no proviene de Shaka (es un evento genérico de CAF), lo ignoramos
+            // Esto soluciona el bug del "Error irrecuperable (undefined)"
+            if (!shakaCode) return;
+
+            console.error(`[ERROR] Shaka Code: ${shakaCode}`);
 
             // ================================================================
             // BUCLE DE NIEBLA - Reintentos especiales
@@ -690,7 +693,7 @@
                         playerManager.seek(0);
                         playerManager.play();
                     }, 1000);
-                    return;  // NO escalar a fatal si estamos en bucle de niebla
+                    return;
                 } else {
                     console.error('[FOG-LOOP] Máximo de reintentos alcanzado');
                     isErrorLoopActive = false;
@@ -700,18 +703,9 @@
             }
 
             // ================================================================
-            // ✨ v1.3.0: ERRORES RECUPERABLES - Dejar que Shaka reintente
+            // STALL DETECTION - Buffer infinito
             // ================================================================
-            if (severity === shaka.util.Error.Severity.RECOVERABLE) {
-                console.warn(`[Recoverable] Error ${shakaCode}. Shaka está reintentando automáticamente...`);
-                // NO hacer nada. Shaka maneja reintentos internos.
-                return;
-            }
-
-            // ================================================================
-            // ✨ v1.3.0: STALL DETECTION - Buffer infinito
-            // ================================================================
-            if (shakaCode === 4015) {  // MEDIA_ERROR_CODE_STALLED
+            if (shakaCode === 4015) { // MEDIA_ERROR_CODE_STALLED
                 stallRetries++;
                 console.warn(`[STALL] Buffer atascado. Reintento ${stallRetries}/${MAX_STALL_RETRIES}`);
                 
@@ -722,25 +716,32 @@
                 }
                 return;
             } else {
-                stallRetries = 0;  // Reset si es otro error
+                stallRetries = 0;
             }
 
             // ================================================================
-            // ERRORES CRÍTICOS - Detener y notificar (Severidad CRITICAL)
+            // ERRORES CRÍTICOS (FAST-FAIL)
             // ================================================================
-            if (severity === shaka.util.Error.Severity.CRITICAL) {
+            // Solo detenemos el reproductor si el código de Shaka es 100% mortal.
+            const FATAL_CODES = [
+                1001, 1002, 1003, // Errores de Manifiesto
+                6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6012 // Errores de DRM y de códecs
+            ];
+
+            if (FATAL_CODES.includes(shakaCode)) {
                 console.error(`[CRITICAL] Error irrecuperable (${shakaCode}). Deteniendo reproducción.`);
                 
-                // ✨ v1.3.0: Mapeo extendido de errores DRM
                 let errorReason = 'FATAL_ERROR';
                 if (shakaCode >= 6000 && shakaCode <= 6099) {
                     errorReason = 'DRM_ERROR';
-                } else if (shakaCode >= 3000 && shakaCode <= 3999) {
-                    errorReason = 'NETWORK_ERROR';
                 }
                 
                 notifySenderFatalError(errorReason, shakaCode);
                 playerManager.stop();
+            } else {
+                // Si el error es de red (ej. 1006, 3014, 3015...), pasará por aquí.
+                // NO HAREMOS NADA. Dejamos que los 'retryParameters' de Shaka actúen y recuperen el stream.
+                console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos automáticos de Shaka...`);
             }
         });
 
