@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.3.1</title>
+    <title>KoreStream Ultra Receiver - v1.3.2</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,24 +29,10 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.3.1</div>
+    <div id="app-version">KoreStream Receiver v1.3.2</div>
 
     <script>
-        // =====================================================================
-        // KORESTREAM v1.3.0-ENTERPRISE - ARQUITECTURA AUDITORIZADA PARA ANDROID
-        // =====================================================================
-        // AUDITORÍA COMPLETADA: Audita específicamente contra KoreStream Android
-        // CORRECCIONES CRÍTICAS IMPLEMENTADAS:
-        // - AC-3 purga OBLIGATORIA en dispositivos limitados
-        // - STPP: eliminar en Shaka viejo, mantener en nuevo
-        // - LIVE detection: MPD@type, no URL sniffing
-        // - User-agent + isTypeSupported() en combinación
-        // - ✨ NUEVO v1.3.0: Inyección de cabeceras DRM en licencias Widevine
-        // - ✨ NUEVO v1.3.0: Error handling por SEVERIDAD (no por códigos)
-        // - ✨ NUEVO v1.3.0: Detección de bucles de Stall (buffer infinito)
-        // =====================================================================
-
-        const RECEIVER_VERSION = 'v1.3.1';
+        const RECEIVER_VERSION = 'v1.3.2';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
@@ -97,10 +83,8 @@
                     const isSupported = MediaSource.isTypeSupported(
                         `video/mp4; codecs="${codec}"`
                     );
-                    console.log(`[CODEC-VALIDATION] ${codec}: ${isSupported ? 'SOPORTADO' : 'NO SOPORTADO'}`);
                     return isSupported;
                 } catch (e) {
-                    console.warn(`[CODEC-VALIDATION] Error validando ${codec}:`, e);
                     return false;
                 }
             });
@@ -108,7 +92,6 @@
 
         function getVideoCodecPreferences(device) {
             let preferred;
-            
             switch(device) {
                 case DEVICE_TYPE.NEST_HUB:
                     preferred = ['avc1', 'h264'];
@@ -125,7 +108,6 @@
                 default:
                     preferred = ['vp9', 'avc1', 'h264'];
             }
-            
             return validateCodecsWithMSE(preferred);
         }
 
@@ -140,7 +122,6 @@
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
             if (!cleanHex || cleanHex.length === 0) {
-                console.error('[UTIL] hexToBase64Url: string vacío o inválido');
                 return '';
             }
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
@@ -154,30 +135,18 @@
         function formatKidToUuid(hexKid) {
             const clean = hexKid.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
             if (clean.length !== 32) {
-                console.warn('[UTIL] KID no es UUID válido (32 hex esperados):', hexKid);
                 return hexKid;
             }
             return `${clean.slice(0,8)}-${clean.slice(8,12)}-${clean.slice(12,16)}-${clean.slice(16,20)}-${clean.slice(20)}`;
         }
 
-        // =====================================================================
-        // DETECCIÓN DE LIVE vs VOD - VIA MANIFEST, NO URL
-        // =====================================================================
-        
         function detectStreamTypeFromManifest(xmlDoc) {
             const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
             if (mpdNode) {
                 const mpdType = mpdNode.getAttribute('type');
-                if (mpdType === 'dynamic') {
-                    console.log('[STREAM-TYPE] LIVE detectado via MPD@type=dynamic (estándar DASH)');
-                    return 'live';
-                }
-                if (mpdType === 'static') {
-                    console.log('[STREAM-TYPE] VOD detectado via MPD@type=static (estándar DASH)');
-                    return 'vod';
-                }
+                if (mpdType === 'dynamic') return 'live';
+                if (mpdType === 'static') return 'vod';
             }
-            console.warn('[STREAM-TYPE] MPD@type no encontrado, asumiendo VOD');
             return 'vod';
         }
 
@@ -209,15 +178,11 @@
                     code: code,
                     timestamp: new Date().toISOString()
                 });
-                console.log(`[CustomChannel] Mensaje enviado: ${reason} (código ${code})`);
             } catch (e) {
                 console.warn('[CustomChannel] Error enviando mensaje:', e);
             }
         }
 
-        // =====================================================================
-        // NVIDIA SHIELD PATCH
-        // =====================================================================
         playerManager.setMessageInterceptor(cast.framework.messages.MessageType.LOAD, loadRequestData => {
             console.log('[KoreStream] Nueva carga. Limpiando estado...');
             activeCustomData = {};
@@ -238,10 +203,6 @@
             return loadRequestData;
         });
 
-        // =====================================================================
-        // CONFIGURACIÓN DE REPRODUCCIÓN
-        // =====================================================================
-        
         const playbackConfig = new cast.framework.PlaybackConfig();
 
         playbackConfig.shakaConfiguration = {
@@ -249,7 +210,6 @@
                 enabled: false,
                 defaultBandwidthEstimate: 5000000
             },
-            
             streaming: {
                 jumpLargeGaps: true,
                 liveIgnoreNtp: true,
@@ -257,24 +217,21 @@
                 rebufferingGoal: 2,
                 stallEnabled: true,
                 preferLiveSegments: false,
-                retryParameters: { maxAttempts: 3, timeout: 8000 }
+                retryParameters: { maxAttempts: 5, timeout: 8000 }
             },
-            
             manifest: {
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true },
                 retryParameters: { maxAttempts: 5, timeout: 10000 }
             },
-            
             drm: {
                 clearKeys: {},
                 servers: {},
                 retryParameters: { 
-                    maxAttempts: 4,      // ✨ v1.3.0: Incrementado de 2 a 4
-                    timeout: 30000       // ✨ v1.3.0: Incrementado de 15s a 30s
+                    maxAttempts: 4,      
+                    timeout: 30000       
                 }
             },
-            
             preferredAudioCodecs: getAudioCodecPreferences(CURRENT_DEVICE),
             preferredVideoCodecs: getVideoCodecPreferences(CURRENT_DEVICE),
             preferredAudioChannelCount: 2,
@@ -292,7 +249,9 @@
                 requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
             }
 
-            if (!requestInfo.url.includes('.mpd') && !requestInfo.url.includes('dash')) {
+            // ✨ v1.3.2 PARCHE CRÍTICO 1: Descodificar URL para que el proxy Android no salte el filtro
+            const safeUrl = decodeURIComponent(decodeURIComponent(requestInfo.url)).toLowerCase();
+            if (!safeUrl.includes('.mpd') && !safeUrl.includes('dash')) {
                 return requestInfo;
             }
 
@@ -305,9 +264,6 @@
                     const parser = new DOMParser();
                     const xmlDoc = parser.parseFromString(rawXml, 'application/xml');
 
-                    // ============================================================
-                    // DETECTAR TIPO DE STREAM
-                    // ============================================================
                     currentStreamType = detectStreamTypeFromManifest(xmlDoc);
 
                     const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
@@ -325,14 +281,12 @@
                                 const pubDate = pubTimeStr ? new Date(pubTimeStr) : new Date();
                                 const newAst = new Date(pubDate.getTime() - 120000).toISOString();
                                 mpdNode.setAttribute('availabilityStartTime', newAst);
-                                console.log('[MANIFEST] AST corregido:', newAst);
                             }
                         }
 
                         const utcTimings = Array.from(xmlDoc.getElementsByTagName('UTCTiming'));
                         utcTimings.forEach(ut => ut.parentNode.removeChild(ut));
 
-                        // ✨ v1.3.0: PT4S para coincidencia con Android
                         mpdNode.setAttribute('minBufferTime', 'PT4S');
                         const currentBuffer = mpdNode.getAttribute('timeShiftBufferDepth');
                         if (!currentBuffer || currentBuffer.includes('PT30S') || currentBuffer.includes('PT22S')) {
@@ -340,41 +294,26 @@
                         }
                     }
 
-                    // ============================================================
-                    // SUBTÍTULOS - Eliminar STPP SOLO en Shaka viejo
-                    // ============================================================
+                    // SUBTÍTULOS STPP
                     const shakaVersion = shaka.Player.version || '3.0.0';
                     const shakaMajor = parseInt(shakaVersion.split('.')[0]);
                     const shakaMinor = parseInt(shakaVersion.split('.')[1]);
                     const isShakaOld = shakaMajor < 3 || (shakaMajor === 3 && shakaMinor < 2);
 
                     if (isShakaOld) {
-                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (VIEJO). Removiendo STPP...`);
                         const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                             as.getAttribute('contentType') === 'text' || 
                             as.querySelector('Representation[codecs="stpp"]')
                         );
                         textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
-                    } else {
-                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (MODERNO). Permitiendo STPP...`);
                     }
 
-                    // ============================================================
                     // DRM HANDLING
-                    // ============================================================
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const isClearKeyStream = keyIds.length > 0;
                     const firstKid = isClearKeyStream ? keyIds[0] : null;
                     const uuidKid = firstKid ? formatKidToUuid(firstKid) : null;
-
-                    // ✨ v1.3.0: Validar KID antes de usarlo
-                    if (isClearKeyStream && uuidKid) {
-                        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                        if (!uuidRegex.test(uuidKid)) {
-                            console.error('[DRM-CLEARKEY] KID mal formado. Puede causar fallo:', uuidKid);
-                        }
-                    }
 
                     const contentProtections = Array.from(xmlDoc.getElementsByTagName('ContentProtection'));
                     contentProtections.forEach(cp => {
@@ -403,9 +342,22 @@
                         }
                     });
 
+                    // ✨ v1.3.2 PARCHE CRÍTICO 2: Inyectar ClearKey estándar del W3C para evitar fallo 6012
                     if (isClearKeyStream && uuidKid) {
                         const adaptationSets = xmlDoc.getElementsByTagName('AdaptationSet');
                         Array.from(adaptationSets).forEach(as => {
+                            // 1. Inyectar W3C ClearKey System
+                            let w3cProt = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
+                                (cp.getAttribute('schemeIdUri') || '').toLowerCase().includes('e2719d58')
+                            );
+                            if (!w3cProt) {
+                                w3cProt = xmlDoc.createElement('ContentProtection');
+                                w3cProt.setAttribute('schemeIdUri', 'urn:uuid:e2719d58-a985-b3c9-781a-273066d30c06');
+                                w3cProt.setAttribute('value', 'ClearKey');
+                                as.insertBefore(w3cProt, as.firstChild);
+                            }
+
+                            // 2. Inyectar mp4protection
                             let mp4Prot = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
                                 (cp.getAttribute('schemeIdUri') || '').includes('urn:mpeg:dash:mp4protection:2011')
                             );
@@ -419,9 +371,7 @@
                         });
                     }
 
-                    // ============================================================
                     // AUDIO - PURGA SEGURA DE AC-3
-                    // ============================================================
                     const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
                         (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
                     );
@@ -429,31 +379,23 @@
                     audioAdaptationSets.forEach(as => {
                         const representations = Array.from(as.getElementsByTagName('Representation'));
                         
-                        if (CURRENT_DEVICE === DEVICE_TYPE.NEST_HUB || 
-                            CURRENT_DEVICE === DEVICE_TYPE.CHROMECAST_ULTRA) {
-                            console.log('[AUDIO] Dispositivo limitado. Removiendo AC-3/E-AC-3...');
+                        if (CURRENT_DEVICE === DEVICE_TYPE.NEST_HUB || CURRENT_DEVICE === DEVICE_TYPE.CHROMECAST_ULTRA) {
                             representations.forEach(rep => {
                                 const codecs = (rep.getAttribute('codecs') || '').toLowerCase();
                                 const mime = (rep.getAttribute('mimeType') || '').toLowerCase();
                                 if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || 
                                     codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
                                     rep.parentNode.removeChild(rep);
-                                    console.log('[AUDIO] AC-3/E-AC-3 REMOVIDO');
                                 }
                             });
-                        } else if (CURRENT_DEVICE === DEVICE_TYPE.SHIELD) {
-                            console.log('[AUDIO] Shield: AC-3/E-AC-3 permitido');
                         }
 
                         if (as.getElementsByTagName('Representation').length === 0) {
                             as.parentNode.removeChild(as);
-                            console.log('[AUDIO] AdaptationSet vacío removido');
                         }
                     });
 
-                    // ============================================================
                     // Normalización de idioma
-                    // ============================================================
                     const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
                     allAdaptationSets.forEach(as => {
                         const lang = as.getAttribute('lang');
@@ -485,7 +427,7 @@
         };
 
         // =====================================================================
-        // MEDIA PLAYBACK INFO HANDLER - BUFFER DINÁMICO
+        // MEDIA PLAYBACK INFO HANDLER
         // =====================================================================
         
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
@@ -502,26 +444,21 @@
             }
 
             config.shakaConfiguration = Object.assign({}, playbackConfig.shakaConfiguration);
-            config.shakaConfiguration.drm = { clearKeys: {}, servers: {} };
+            // ✨ v1.3.2 PARCHE CRÍTICO 3: Clonar el objeto drm para no destruir los retryParameters
+            config.shakaConfiguration.drm = Object.assign({}, playbackConfig.shakaConfiguration.drm);
+            config.shakaConfiguration.drm.clearKeys = {};
+            config.shakaConfiguration.drm.servers = {};
 
-            // ================================================================
-            // BUFFER DINÁMICO según tipo de stream
-            // ================================================================
             if (currentStreamType === 'live') {
                 config.shakaConfiguration.streaming.bufferingGoal = 3;
                 config.shakaConfiguration.streaming.rebufferingGoal = 1.5;
                 config.shakaConfiguration.streaming.preferLiveSegments = true;
-                console.log('[BUFFER] LIVE: 3s/1.5s');
             } else {
                 config.shakaConfiguration.streaming.bufferingGoal = 10;
                 config.shakaConfiguration.streaming.rebufferingGoal = 4;
                 config.shakaConfiguration.streaming.preferLiveSegments = false;
-                console.log('[BUFFER] VOD: 10s/4s');
             }
 
-            // ================================================================
-            // DRM CONFIGURATION - ClearKey
-            // ================================================================
             const hasClearKeys = activeCustomData.clearKeys && 
                                  typeof activeCustomData.clearKeys === 'object' && 
                                  Object.keys(activeCustomData.clearKeys).length > 0;
@@ -534,18 +471,14 @@
                         const cleanKey = v.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         
                         if (!cleanKeyId || !cleanKey) {
-                            console.error('[DRM-CLEARKEY] KID o KEY vacío después de limpiar:', k, v);
                             continue;
                         }
-                        
                         config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
-                console.log(`[DRM-CLEARKEY] ${Object.keys(config.shakaConfiguration.drm.clearKeys).length} claves configuradas`);
             } else if (activeCustomData.licenseUrl) {
                 config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseUrl;
-                console.log('[DRM-WIDEVINE] License Server:', activeCustomData.licenseUrl);
             }
 
             return config;
@@ -558,7 +491,6 @@
         playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
             if (isErrorLoopActive) {
                 fogLoopRetries++;
-                console.log(`[FOG-LOOP] Video terminó. Reinicio #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
                 
                 if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
                     fogLoopTimeout = setTimeout(() => {
@@ -566,7 +498,6 @@
                         playerManager.play();
                     }, 50);
                 } else {
-                    console.error('[FOG-LOOP] MÁXIMO DE REINTENTOS ALCANZADO. Deteniendo.');
                     isErrorLoopActive = false;
                     notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
                 }
@@ -586,49 +517,27 @@
                     if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
                     }
-                } catch (e) {
-                    console.warn('[Audio Track Filter Warning]', e);
-                }
+                } catch (e) {}
 
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
-                    // ================================================================
-                    // ✨ v1.3.0: REQUEST FILTER para inyectar cabeceras DRM/Widevine
-                    // ================================================================
                     netEngine.registerRequestFilter((type, request) => {
-                        console.log(`[NETWORK-REQUEST] Tipo: ${type}, URL: ${request.uri.substring(0, 60)}...`);
-                        
-                        // Cabeceras genéricas (CDN, Manifesto, Segmentos)
                         if (activeCustomData && activeCustomData.headers) {
                             Object.assign(request.headers, activeCustomData.headers);
-                            console.log('[NETWORK-HEADERS] Cabeceras genéricas inyectadas');
                         }
-                        
-                        // ✨ v1.3.0: Cabeceras DRM específicas SOLO para licencias Widevine
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
                             if (activeCustomData && activeCustomData.drmHeaders) {
                                 Object.assign(request.headers, activeCustomData.drmHeaders);
-                                console.log('[DRM-HEADERS] Cabeceras Widevine DRM inyectadas en licencia');
                             }
-                            // Aplicar también cabeceras genéricas en DRM como fallback
-                            console.log('[DRM-REQUEST] Solicitud de licencia preparada');
                         }
                     });
 
-                    // ================================================================
-                    // RESPONSE FILTER para ClearKey y manejo de errores DRM
-                    // ================================================================
                     netEngine.registerResponseFilter((type, response) => {
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                            console.log(`[LICENSE-RESPONSE] Status: ${response.status}`);
-                            
-                            // ✨ v1.3.0: Detectar errores de autenticación DRM
                             if (response.status === 401 || response.status === 403) {
-                                console.error(`[DRM] Error ${response.status} - Autenticación fallida en servidor de licencias`);
                                 notifySenderFatalError('DRM_LICENSE_AUTH_ERROR', response.status);
                             }
                             
-                            // ✨ v1.3.0: Procesar ClearKey JWKS
                             if (activeCustomData && activeCustomData.clearKeys && 
                                 Object.keys(activeCustomData.clearKeys).length > 0) {
                                 try {
@@ -638,7 +547,6 @@
                                         const cleanKVal = kVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                                         
                                         if (!cleanKId.match(/^[0-9a-f]+$/) || !cleanKVal.match(/^[0-9a-f]+$/)) {
-                                            console.error(`[ClearKey] KID o KEY inválido (hex esperado):`, cleanKId, cleanKVal);
                                             continue;
                                         }
                                         
@@ -648,15 +556,8 @@
                                             k: hexToBase64Url(cleanKVal)
                                         });
                                     }
-                                    
-                                    if (keysArray.length === 0) {
-                                        console.error('[ClearKey] Ninguna clave válida. Licencia será vacía.');
-                                    }
-                                    
                                     response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
-                                    console.log('[ClearKey] JWKS formateado correctamente');
                                 } catch (e) {
-                                    console.error('[ClearKey] Error formateando JWKS:', e.message);
                                     notifySenderFatalError('CLEARKEY_FORMAT_ERROR', 8001);
                                 }
                             }
@@ -666,28 +567,20 @@
             }
         });
 
-// =====================================================================
-        // ✨ v1.3.1: ERROR HANDLER CORREGIDO - Código estricto, sin falsos positivos
+        // =====================================================================
+        // ERROR HANDLER CORREGIDO - Código estricto, sin falsos positivos
         // =====================================================================
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             const error = event.error;
             if (!error) return;
 
             const shakaCode = error.shakaErrorCode;
-            
-            // Si el error no proviene de Shaka (es un evento genérico de CAF), lo ignoramos
-            // Esto soluciona el bug del "Error irrecuperable (undefined)"
-            if (!shakaCode) return;
+            if (!shakaCode) return; 
 
             console.error(`[ERROR] Shaka Code: ${shakaCode}`);
 
-            // ================================================================
-            // BUCLE DE NIEBLA - Reintentos especiales
-            // ================================================================
             if (isErrorLoopActive) {
                 fogLoopRetries++;
-                console.warn(`[FOG-LOOP] Error ${shakaCode}. Reintento #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
-                
                 if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
                     fogLoopTimeout = setTimeout(() => {
                         playerManager.seek(0);
@@ -695,22 +588,15 @@
                     }, 1000);
                     return;
                 } else {
-                    console.error('[FOG-LOOP] Máximo de reintentos alcanzado');
                     isErrorLoopActive = false;
                     notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
                     return;
                 }
             }
 
-            // ================================================================
-            // STALL DETECTION - Buffer infinito
-            // ================================================================
-            if (shakaCode === 4015) { // MEDIA_ERROR_CODE_STALLED
+            if (shakaCode === 4015) { 
                 stallRetries++;
-                console.warn(`[STALL] Buffer atascado. Reintento ${stallRetries}/${MAX_STALL_RETRIES}`);
-                
                 if (stallRetries >= MAX_STALL_RETRIES) {
-                    console.error('[STALL] Bucle infinito de buffer detectado');
                     notifySenderFatalError('BUFFER_STALL_LOOP', 4015);
                     playerManager.stop();
                 }
@@ -719,51 +605,25 @@
                 stallRetries = 0;
             }
 
-            // ================================================================
-            // ERRORES CRÍTICOS (FAST-FAIL)
-            // ================================================================
-            // Solo detenemos el reproductor si el código de Shaka es 100% mortal.
             const FATAL_CODES = [
-                1001, 1002, 1003, // Errores de Manifiesto
-                6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6012 // Errores de DRM y de códecs
+                1001, 1002, 1003, 
+                6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6012 
             ];
 
             if (FATAL_CODES.includes(shakaCode)) {
                 console.error(`[CRITICAL] Error irrecuperable (${shakaCode}). Deteniendo reproducción.`);
-                
                 let errorReason = 'FATAL_ERROR';
                 if (shakaCode >= 6000 && shakaCode <= 6099) {
                     errorReason = 'DRM_ERROR';
                 }
-                
                 notifySenderFatalError(errorReason, shakaCode);
                 playerManager.stop();
             } else {
-                // Si el error es de red (ej. 1006, 3014, 3015...), pasará por aquí.
-                // NO HAREMOS NADA. Dejamos que los 'retryParameters' de Shaka actúen y recuperen el stream.
-                console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos automáticos de Shaka...`);
+                console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos de Shaka...`);
             }
         });
 
         context.start({ playbackConfig: playbackConfig });
-
-        // =====================================================================
-        // LOGGING DE INICIALIZACIÓN
-        // =====================================================================
-        console.log(`
-╔════════════════════════════════════════════════════════════════╗
-║   KoreStream Receiver v1.3.0-ENTERPRISE - Inicialización OK    ║
-╠════════════════════════════════════════════════════════════════╣
-║ Dispositivo: ${CURRENT_DEVICE.padEnd(54)}║
-║ Codecs Video: ${getVideoCodecPreferences(CURRENT_DEVICE).join(', ').padEnd(49)}║
-║ Codecs Audio: AAC (AC-3 filtrado por seguridad)                ║
-║ Live Detection: MPD@type (DASH RFC 6235)                       ║
-║ Custom Channel: ${CUSTOM_CHANNEL.padEnd(50)}║
-║ Fo Loop: ENABLED (máx ${MAX_FOG_LOOP_RETRIES} reintentos)                 ║
-║ Stall Detection: ENABLED (máx ${MAX_STALL_RETRIES} stalleos)              ║
-║ DRM Headers: ENABLED (Widevine vía requestFilter)              ║
-╚════════════════════════════════════════════════════════════════╝
-        `);
     </script>
 </body>
 </html>
