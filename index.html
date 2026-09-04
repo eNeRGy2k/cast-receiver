@@ -40,6 +40,7 @@
         // - STPP: eliminar en Shaka viejo, mantener en nuevo
         // - LIVE detection: MPD@type, no URL sniffing
         // - User-agent + isTypeSupported() en combinación
+        // - BUCLE DE NIEBLA: Reintentos automáticos con contador
         // =====================================================================
 
         const RECEIVER_VERSION = 'v1.2.0-SAFE';
@@ -186,6 +187,13 @@
         let activeCustomData = {};
         let isErrorLoopActive = false;
         let currentStreamType = 'vod';  // Cache del tipo de stream
+        
+        // =====================================================================
+        // BUCLE DE NIEBLA - Variables de control
+        // =====================================================================
+        let fogLoopRetries = 0;
+        const MAX_FOG_LOOP_RETRIES = 10;  // Máximo 10 reintentos
+        let fogLoopTimeout = null;
 
         function notifySenderFatalError(reason, code) {
             try {
@@ -207,6 +215,13 @@
             activeCustomData = {};
             isErrorLoopActive = false;
             currentStreamType = 'vod';
+            fogLoopRetries = 0;  // RESET contador de reintentos
+            
+            // Limpiar timeout previo si existe
+            if (fogLoopTimeout) {
+                clearTimeout(fogLoopTimeout);
+                fogLoopTimeout = null;
+            }
             
             const videoElement = document.querySelector('video');
             if (videoElement) {
@@ -522,11 +537,19 @@
         
         playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
             if (isErrorLoopActive) {
-                console.log('[KoreStream] Reiniciando bucle de niebla');
-                setTimeout(() => {
-                    playerManager.seek(0);
-                    playerManager.play();
-                }, 50);
+                fogLoopRetries++;
+                console.log(`[FOG-LOOP] Video terminó. Reinicio #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
+                
+                if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
+                    fogLoopTimeout = setTimeout(() => {
+                        playerManager.seek(0);
+                        playerManager.play();
+                    }, 50);
+                } else {
+                    console.error('[FOG-LOOP] MÁXIMO DE REINTENTOS ALCANZADO. Deteniendo bucle.');
+                    isErrorLoopActive = false;
+                    notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
+                }
             }
         });
 
@@ -572,6 +595,31 @@
 
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             const shakaCode = event.error ? event.error.shakaErrorCode : null;
+            
+            // ================================================================
+            // SI ESTAMOS EN BUCLE DE NIEBLA Y HAY ERROR: REINTENTAR
+            // ================================================================
+            if (isErrorLoopActive) {
+                fogLoopRetries++;
+                console.warn(`[FOG-LOOP] Error ${shakaCode} detectado. Reintento #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
+                
+                if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
+                    fogLoopTimeout = setTimeout(() => {
+                        playerManager.seek(0);
+                        playerManager.play();
+                    }, 1000);  // Esperar 1 segundo antes de reintentar
+                    return;  // NO enviar error fatal si estamos reintentando
+                } else {
+                    console.error('[FOG-LOOP] MÁXIMO DE REINTENTOS ALCANZADO. Parando.');
+                    isErrorLoopActive = false;
+                    notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
+                    return;
+                }
+            }
+            
+            // ================================================================
+            // ERRORES FATALES NORMALES (No en bucle de niebla)
+            // ================================================================
             if (shakaCode === 1001 || shakaCode === 6012 || shakaCode === 6007 || shakaCode === 6000) {
                 console.warn(`[Fail-Fast] Error irrecuperable (${shakaCode}). Notificando para salto inmediato.`);
                 notifySenderFatalError('FATAL_ERROR', shakaCode);
@@ -585,15 +633,16 @@
         // LOGGING DE INICIALIZACIÓN
         // =====================================================================
         console.log(`
-╔════════════════════════════════════════════════════════════════════╗
+╔════════════════════════════════════════════════════════════════[...]
 ║       KoreStream Receiver v1.2.0-SAFE - Inicialización OK          ║
-╠════════════════════════════════════════════════════════════════════╣
+╠════════════════════════════════════════════════════════════════[...]
 ║ Dispositivo: ${CURRENT_DEVICE.padEnd(54)}║
 ║ Codecs Video: ${getVideoCodecPreferences(CURRENT_DEVICE).join(', ').padEnd(51)}║
 ║ Codecs Audio: AAC (AC-3 filtrado en manifests por seguridad)       ║
 ║ Live Detection: MPD@type (DASH estándar)                           ║
 ║ Custom Channel: ${CUSTOM_CHANNEL.padEnd(52)}║
-╚════════════════════════════════════════════════════════════════════╝
+║ Fog Loop: ENABLED (máx ${MAX_FOG_LOOP_RETRIES} reintentos)                   ║
+╚════════════════════════════════════════════════════════════════[...]
         `);
     </script>
 </body>
