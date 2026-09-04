@@ -6,7 +6,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KoreStream Ultra Receiver - v1.3.3</title>
+    <title>KoreStream Ultra Receiver - v1.3.4</title>
     <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
     <style>
         #app-version {
@@ -29,15 +29,15 @@
 <body style="margin: 0; background: #000; overflow: hidden; width: 100vw; height: 100vh;">
 
     <cast-media-player></cast-media-player>
-    <div id="app-version">KoreStream Receiver v1.3.3</div>
+    <div id="app-version">KoreStream Receiver v1.3.4</div>
 
     <script>
-        const RECEIVER_VERSION = 'v1.3.3';
+        const RECEIVER_VERSION = 'v1.3.4';
         const CUSTOM_CHANNEL = 'urn:x-cast:com.equisde.korestream';
         console.log(`[KoreStream] Iniciando Receiver ${RECEIVER_VERSION}`);
 
         // =====================================================================
-        // DEVICE DETECTION CON VALIDACIÓN DUAL
+        // DEVICE DETECTION
         // =====================================================================
         const DEVICE_TYPE = {
             NEST_HUB: 'nest_hub',
@@ -49,44 +49,23 @@
 
         function detectDevice() {
             const ua = navigator.userAgent.toLowerCase();
-            
-            if (ua.includes('shield') || ua.includes('nvsl')) {
-                console.log('[DEVICE] Detectado: NVIDIA Shield');
-                return DEVICE_TYPE.SHIELD;
-            }
-            if (ua.includes('nest hub') || ua.includes('fuchsia')) {
-                console.log('[DEVICE] Detectado: Google Nest Hub (RECURSOS LIMITADOS)');
-                return DEVICE_TYPE.NEST_HUB;
-            }
-            if (ua.includes('android tv') || ua.includes('googletv')) {
-                console.log('[DEVICE] Detectado: Android TV');
-                return DEVICE_TYPE.ANDROID_TV;
-            }
-            if (ua.includes('chromecast')) {
-                console.log('[DEVICE] Detectado: Chromecast (versión desconocida)');
-                return DEVICE_TYPE.CHROMECAST_ULTRA;
-            }
-            
-            console.log('[DEVICE] Dispositivo genérico/desconocido');
+            if (ua.includes('shield') || ua.includes('nvsl')) return DEVICE_TYPE.SHIELD;
+            if (ua.includes('nest hub') || ua.includes('fuchsia')) return DEVICE_TYPE.NEST_HUB;
+            if (ua.includes('android tv') || ua.includes('googletv')) return DEVICE_TYPE.ANDROID_TV;
+            if (ua.includes('chromecast')) return DEVICE_TYPE.CHROMECAST_ULTRA;
             return DEVICE_TYPE.GENERIC;
         }
 
         const CURRENT_DEVICE = detectDevice();
 
         // =====================================================================
-        // CODEC PREFERENCES CON VALIDACIÓN VIA MediaSource.isTypeSupported()
+        // CODEC PREFERENCES
         // =====================================================================
-        
         function validateCodecsWithMSE(codecs) {
             return codecs.filter(codec => {
                 try {
-                    const isSupported = MediaSource.isTypeSupported(
-                        `video/mp4; codecs="${codec}"`
-                    );
-                    console.log(`[CODEC-VALIDATION] ${codec}: ${isSupported ? 'SOPORTADO' : 'NO SOPORTADO'}`);
-                    return isSupported;
+                    return MediaSource.isTypeSupported(`video/mp4; codecs="${codec}"`);
                 } catch (e) {
-                    console.warn(`[CODEC-VALIDATION] Error validando ${codec}:`, e);
                     return false;
                 }
             });
@@ -95,20 +74,11 @@
         function getVideoCodecPreferences(device) {
             let preferred;
             switch(device) {
-                case DEVICE_TYPE.NEST_HUB:
-                    preferred = ['avc1', 'h264'];
-                    break;
-                case DEVICE_TYPE.SHIELD:
-                    preferred = ['av01', 'hev1', 'vp9', 'avc1', 'h264'];
-                    break;
-                case DEVICE_TYPE.CHROMECAST_ULTRA:
-                    preferred = ['vp9', 'avc1', 'h264'];
-                    break;
-                case DEVICE_TYPE.ANDROID_TV:
-                    preferred = ['vp9', 'hev1', 'avc1', 'h264'];
-                    break;
-                default:
-                    preferred = ['vp9', 'avc1', 'h264'];
+                case DEVICE_TYPE.NEST_HUB: preferred = ['avc1', 'h264']; break;
+                case DEVICE_TYPE.SHIELD: preferred = ['av01', 'hev1', 'vp9', 'avc1', 'h264']; break;
+                case DEVICE_TYPE.CHROMECAST_ULTRA: preferred = ['vp9', 'avc1', 'h264']; break;
+                case DEVICE_TYPE.ANDROID_TV: preferred = ['vp9', 'hev1', 'avc1', 'h264']; break;
+                default: preferred = ['vp9', 'avc1', 'h264'];
             }
             return validateCodecsWithMSE(preferred);
         }
@@ -118,15 +88,11 @@
         }
 
         // =====================================================================
-        // UTILITY FUNCTIONS
+        // UTILS
         // =====================================================================
-        
         function hexToBase64Url(hexStr) {
             const cleanHex = hexStr.replace(/[^a-fA-F0-9]/g, '');
-            if (!cleanHex || cleanHex.length === 0) {
-                console.error('[UTIL] hexToBase64Url: string vacío o inválido');
-                return '';
-            }
+            if (!cleanHex) return '';
             const bytes = new Uint8Array(cleanHex.match(/.{1,2}/g).map(byte => parseInt(byte, 16)));
             let binary = '';
             for (let i = 0; i < bytes.byteLength; i++) {
@@ -137,59 +103,43 @@
 
         function formatKidToUuid(hexKid) {
             const clean = hexKid.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
-            if (clean.length !== 32) {
-                console.warn('[UTIL] KID no es UUID válido (32 hex esperados):', hexKid);
-                return hexKid;
-            }
+            if (clean.length !== 32) return hexKid;
             return `${clean.slice(0,8)}-${clean.slice(8,12)}-${clean.slice(12,16)}-${clean.slice(16,20)}-${clean.slice(20)}`;
         }
 
         function detectStreamTypeFromManifest(xmlDoc) {
             const mpdNode = xmlDoc.getElementsByTagName('MPD')[0];
             if (mpdNode) {
-                const mpdType = mpdNode.getAttribute('type');
-                if (mpdType === 'dynamic') {
-                    console.log('[STREAM-TYPE] LIVE detectado via MPD@type=dynamic (estándar DASH)');
-                    return 'live';
-                }
-                if (mpdType === 'static') {
-                    console.log('[STREAM-TYPE] VOD detectado via MPD@type=static (estándar DASH)');
-                    return 'vod';
-                }
+                const type = mpdNode.getAttribute('type');
+                if (type === 'dynamic') return 'live';
+                if (type === 'static') return 'vod';
             }
-            console.warn('[STREAM-TYPE] MPD@type no encontrado, asumiendo VOD');
             return 'vod';
         }
 
         // =====================================================================
-        // CONTEXTO Y CONFIGURACIÓN GLOBAL
+        // CONTEXTO Y ESTADO GLOBAL
         // =====================================================================
-        
         const context = cast.framework.CastReceiverContext.getInstance();
         const playerManager = context.getPlayerManager();
+        
         let activeCustomData = {};
         let isErrorLoopActive = false;
         let currentStreamType = 'vod';
+        let localProxyPrefix = ''; // Guardará la IP base de tu servidor en Android
         
         let fogLoopRetries = 0;
         const MAX_FOG_LOOP_RETRIES = 10;
         let fogLoopTimeout = null;
-        
         let stallRetries = 0;
         const MAX_STALL_RETRIES = 5;
 
         function notifySenderFatalError(reason, code) {
             try {
                 context.sendCustomMessage(CUSTOM_CHANNEL, undefined, {
-                    type: 'FATAL_ERROR',
-                    reason: reason,
-                    code: code,
-                    timestamp: new Date().toISOString()
+                    type: 'FATAL_ERROR', reason: reason, code: code, timestamp: new Date().toISOString()
                 });
-                console.log(`[CustomChannel] Mensaje enviado: ${reason} (código ${code})`);
-            } catch (e) {
-                console.warn('[CustomChannel] Error enviando mensaje:', e);
-            }
+            } catch (e) {}
         }
 
         playerManager.setMessageInterceptor(cast.framework.messages.MessageType.LOAD, loadRequestData => {
@@ -197,6 +147,7 @@
             activeCustomData = {};
             isErrorLoopActive = false;
             currentStreamType = 'vod';
+            localProxyPrefix = '';
             fogLoopRetries = 0;
             stallRetries = 0;
             
@@ -206,54 +157,38 @@
             }
             
             const videoElement = document.querySelector('video');
-            if (videoElement) {
-                videoElement.loop = false;
-            }
+            if (videoElement) videoElement.loop = false;
+            
             return loadRequestData;
         });
 
+        // =====================================================================
+        // CONFIGURACIÓN DE REPRODUCCIÓN (SHAKA)
+        // =====================================================================
         const playbackConfig = new cast.framework.PlaybackConfig();
 
         playbackConfig.shakaConfiguration = {
-            abr: { 
-                enabled: false,
-                defaultBandwidthEstimate: 5000000
-            },
+            abr: { enabled: false, defaultBandwidthEstimate: 5000000 },
             streaming: {
-                jumpLargeGaps: true,
-                liveIgnoreNtp: true,
-                bufferingGoal: 4,
-                rebufferingGoal: 2,
-                stallEnabled: true,
-                preferLiveSegments: false,
-                retryParameters: { maxAttempts: 5, timeout: 8000 }
+                jumpLargeGaps: true, liveIgnoreNtp: true, bufferingGoal: 4, rebufferingGoal: 2,
+                stallEnabled: true, preferLiveSegments: false, retryParameters: { maxAttempts: 5, timeout: 8000 }
             },
             manifest: {
                 hls: { ignoreTextStreamFailures: true, allowInsecureScheme: true },
                 dash: { ignoreMinBufferTime: true, autoCorrectDrift: true },
                 retryParameters: { maxAttempts: 5, timeout: 10000 }
             },
-            drm: {
-                clearKeys: {},
-                servers: {},
-                retryParameters: { 
-                    maxAttempts: 4,      
-                    timeout: 30000       
-                }
-            },
+            drm: { clearKeys: {}, servers: {}, retryParameters: { maxAttempts: 4, timeout: 30000 } },
             preferredAudioCodecs: getAudioCodecPreferences(CURRENT_DEVICE),
             preferredVideoCodecs: getVideoCodecPreferences(CURRENT_DEVICE),
-            preferredAudioChannelCount: 2,
-            preferFewerChannels: true
+            preferredAudioChannelCount: 2, preferFewerChannels: true
         };
 
         // =====================================================================
-        // MANIFEST REQUEST HANDLER - PURGA SEGURA DE CODECS Y DRM
+        // MANIFEST HANDLER - PURGA DE XML
         // =====================================================================
-        
         playbackConfig.manifestRequestHandler = (requestInfo) => {
             requestInfo.withCredentials = false;
-
             if (activeCustomData && activeCustomData.headers) {
                 requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
             }
@@ -264,11 +199,7 @@
 
                 try {
                     const rawText = new TextDecoder('utf-8').decode(response.data);
-
-                    // ✨ PARCHE 1: Verificamos si es DASH leyendo el contenido en lugar de la URL
-                    if (!rawText.includes('<MPD') && !rawText.includes('<mpd')) {
-                        return; // No es DASH, no lo procesamos
-                    }
+                    if (!rawText.includes('<MPD') && !rawText.includes('<mpd')) return;
 
                     const parser = new DOMParser();
                     const xmlDoc = parser.parseFromString(rawText, 'application/xml');
@@ -280,105 +211,65 @@
                         const ast = mpdNode.getAttribute('availabilityStartTime') || '';
                         const periodNode = xmlDoc.getElementsByTagName('Period')[0];
                         const periodStart = periodNode ? (periodNode.getAttribute('start') || '') : '';
-                        
                         const hasEpochPeriodStart = periodStart && !periodStart.startsWith('PT0S') && !periodStart.startsWith('PT0.000S');
                         const hasAbsoluteTimeline = xmlDoc.querySelector('SegmentTimeline S[t]');
 
                         if (!hasEpochPeriodStart && !hasAbsoluteTimeline) {
                             if (ast.startsWith('1970') || ast.startsWith('1900') || ast.startsWith('2015') || !ast) {
-                                const pubTimeStr = mpdNode.getAttribute('publishTime');
-                                const pubDate = pubTimeStr ? new Date(pubTimeStr) : new Date();
-                                const newAst = new Date(pubDate.getTime() - 120000).toISOString();
-                                mpdNode.setAttribute('availabilityStartTime', newAst);
-                                console.log('[MANIFEST] AST corregido:', newAst);
+                                const pubDate = mpdNode.getAttribute('publishTime') ? new Date(mpdNode.getAttribute('publishTime')) : new Date();
+                                mpdNode.setAttribute('availabilityStartTime', new Date(pubDate.getTime() - 120000).toISOString());
                             }
                         }
 
-                        const utcTimings = Array.from(xmlDoc.getElementsByTagName('UTCTiming'));
-                        utcTimings.forEach(ut => ut.parentNode.removeChild(ut));
-
+                        Array.from(xmlDoc.getElementsByTagName('UTCTiming')).forEach(ut => ut.parentNode.removeChild(ut));
                         mpdNode.setAttribute('minBufferTime', 'PT4S');
+                        
                         const currentBuffer = mpdNode.getAttribute('timeShiftBufferDepth');
                         if (!currentBuffer || currentBuffer.includes('PT30S') || currentBuffer.includes('PT22S')) {
                             mpdNode.setAttribute('timeShiftBufferDepth', 'PT60S');
                         }
                     }
 
-                    // SUBTÍTULOS STPP
-                    const shakaVersion = shaka.Player.version || '3.0.0';
-                    const shakaMajor = parseInt(shakaVersion.split('.')[0]);
-                    const shakaMinor = parseInt(shakaVersion.split('.')[1]);
-                    const isShakaOld = shakaMajor < 3 || (shakaMajor === 3 && shakaMinor < 2);
-
-                    if (isShakaOld) {
-                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (VIEJO). Removiendo STPP...`);
-                        const textAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
-                            as.getAttribute('contentType') === 'text' || 
-                            as.querySelector('Representation[codecs="stpp"]')
-                        );
-                        textAdaptationSets.forEach(as => as.parentNode.removeChild(as));
-                    } else {
-                        console.log(`[SUBTITLE] Shaka ${shakaVersion} (MODERNO). Permitiendo STPP...`);
+                    // STPP
+                    const shakaMajor = parseInt((shaka.Player.version || '3.0.0').split('.')[0]);
+                    const shakaMinor = parseInt((shaka.Player.version || '3.0.0').split('.')[1]);
+                    if (shakaMajor < 3 || (shakaMajor === 3 && shakaMinor < 2)) {
+                        Array.from(xmlDoc.getElementsByTagName('AdaptationSet'))
+                            .filter(as => as.getAttribute('contentType') === 'text' || as.querySelector('Representation[codecs="stpp"]'))
+                            .forEach(as => as.parentNode.removeChild(as));
                     }
 
-                    // DRM HANDLING
+                    // DRM & CLEARKEY W3C
                     const clearKeys = activeCustomData.clearKeys || {};
                     const keyIds = Object.keys(clearKeys);
                     const isClearKeyStream = keyIds.length > 0;
-                    const firstKid = isClearKeyStream ? keyIds[0] : null;
-                    const uuidKid = firstKid ? formatKidToUuid(firstKid) : null;
+                    const uuidKid = isClearKeyStream ? formatKidToUuid(keyIds[0]) : null;
 
-                    if (isClearKeyStream && uuidKid) {
-                        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-                        if (!uuidRegex.test(uuidKid)) {
-                            console.error('[DRM-CLEARKEY] KID mal formado. Puede causar fallo:', uuidKid);
-                        }
-                    }
-
-                    const contentProtections = Array.from(xmlDoc.getElementsByTagName('ContentProtection'));
-                    contentProtections.forEach(cp => {
+                    Array.from(xmlDoc.getElementsByTagName('ContentProtection')).forEach(cp => {
                         const scheme = (cp.getAttribute('schemeIdUri') || '').toLowerCase();
-                        
                         if (isClearKeyStream) {
-                            const isToPurge = scheme.includes('edef8ba9') || scheme.includes('9a04f079') ||
-                                              scheme.includes('adb41c24') || scheme.includes('adb90c1d') ||
-                                              scheme.includes('8043001d') || scheme.includes('1077efec') ||
-                                              scheme.includes('widevine') || scheme.includes('playready') ||
-                                              scheme.includes('nagra');
-
-                            if (isToPurge) {
+                            if (scheme.includes('edef8ba9') || scheme.includes('9a04f079') || scheme.includes('adb41c24') || scheme.includes('adb90c1d') || scheme.includes('widevine') || scheme.includes('playready') || scheme.includes('nagra')) {
                                 cp.parentNode.removeChild(cp);
                                 return;
                             }
-                            const psshNodes = cp.getElementsByTagName('cenc:pssh');
-                            Array.from(psshNodes).forEach(p => p.parentNode.removeChild(p));
+                            Array.from(cp.getElementsByTagName('cenc:pssh')).forEach(p => p.parentNode.removeChild(p));
                         } else {
-                            const isUnsupportedDrm = scheme.includes('9a04f079') || scheme.includes('adb41c24') ||
-                                                    scheme.includes('adb90c1d') || scheme.includes('playready') ||
-                                                    scheme.includes('nagra');
-                            if (isUnsupportedDrm) {
+                            if (scheme.includes('9a04f079') || scheme.includes('adb41c24') || scheme.includes('playready') || scheme.includes('nagra')) {
                                 cp.parentNode.removeChild(cp);
                             }
                         }
                     });
 
-                    // ✨ PARCHE 2: Inyección W3C ClearKey (Evita fallback fantasma a Widevine)
                     if (isClearKeyStream && uuidKid) {
-                        const adaptationSets = xmlDoc.getElementsByTagName('AdaptationSet');
-                        Array.from(adaptationSets).forEach(as => {
-                            let w3cProt = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
-                                (cp.getAttribute('schemeIdUri') || '').toLowerCase().includes('e2719d58')
-                            );
+                        Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).forEach(as => {
+                            let w3cProt = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => (cp.getAttribute('schemeIdUri') || '').toLowerCase().includes('e2719d58'));
                             if (!w3cProt) {
                                 w3cProt = xmlDoc.createElement('ContentProtection');
                                 w3cProt.setAttribute('schemeIdUri', 'urn:uuid:e2719d58-a985-b3c9-781a-273066d30c06');
                                 w3cProt.setAttribute('value', 'ClearKey');
                                 as.insertBefore(w3cProt, as.firstChild);
                             }
-
-                            let mp4Prot = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => 
-                                (cp.getAttribute('schemeIdUri') || '').includes('urn:mpeg:dash:mp4protection:2011')
-                            );
+                            let mp4Prot = Array.from(as.getElementsByTagName('ContentProtection')).find(cp => (cp.getAttribute('schemeIdUri') || '').includes('urn:mpeg:dash:mp4protection:2011'));
                             if (!mp4Prot) {
                                 mp4Prot = xmlDoc.createElement('ContentProtection');
                                 mp4Prot.setAttribute('schemeIdUri', 'urn:mpeg:dash:mp4protection:2011');
@@ -389,85 +280,54 @@
                         });
                     }
 
-                    // AUDIO - PURGA SEGURA DE AC-3
-                    const audioAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => 
-                        (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))
-                    );
-
-                    audioAdaptationSets.forEach(as => {
-                        const representations = Array.from(as.getElementsByTagName('Representation'));
-                        
+                    // AUDIO
+                    Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).filter(as => (as.getAttribute('contentType') === 'audio' || (as.getAttribute('mimeType') || '').startsWith('audio'))).forEach(as => {
                         if (CURRENT_DEVICE === DEVICE_TYPE.NEST_HUB || CURRENT_DEVICE === DEVICE_TYPE.CHROMECAST_ULTRA) {
-                            representations.forEach(rep => {
+                            Array.from(as.getElementsByTagName('Representation')).forEach(rep => {
                                 const codecs = (rep.getAttribute('codecs') || '').toLowerCase();
-                                const mime = (rep.getAttribute('mimeType') || '').toLowerCase();
-                                if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('eac3') || 
-                                    codecs.includes('ac3') || mime.includes('ac3') || mime.includes('ec-3')) {
+                                if (codecs.includes('ac-3') || codecs.includes('ec-3') || codecs.includes('ac3')) {
                                     rep.parentNode.removeChild(rep);
-                                    console.log('[AUDIO] AC-3/E-AC-3 REMOVIDO');
                                 }
                             });
-                        } else if (CURRENT_DEVICE === DEVICE_TYPE.SHIELD) {
-                            console.log('[AUDIO] Shield: AC-3/E-AC-3 permitido');
                         }
-
-                        if (as.getElementsByTagName('Representation').length === 0) {
-                            as.parentNode.removeChild(as);
-                            console.log('[AUDIO] AdaptationSet vacío removido');
-                        }
+                        if (as.getElementsByTagName('Representation').length === 0) as.parentNode.removeChild(as);
                     });
 
-                    // Normalización de idioma
-                    const allAdaptationSets = Array.from(xmlDoc.getElementsByTagName('AdaptationSet'));
-                    allAdaptationSets.forEach(as => {
-                        const lang = as.getAttribute('lang');
-                        if (!lang || lang.toLowerCase() === 'und') {
-                            as.setAttribute('lang', 'es');
-                        }
+                    // IDIOMA
+                    Array.from(xmlDoc.getElementsByTagName('AdaptationSet')).forEach(as => {
+                        if (!as.getAttribute('lang') || as.getAttribute('lang').toLowerCase() === 'und') as.setAttribute('lang', 'es');
                     });
 
-                    const serializer = new XMLSerializer();
-                    const modifiedXml = serializer.serializeToString(xmlDoc);
-                    response.data = new TextEncoder().encode(modifiedXml).buffer;
-                    console.log('[MANIFEST] Purga de XML y DRM completada con éxito.');
+                    response.data = new TextEncoder().encode(new XMLSerializer().serializeToString(xmlDoc)).buffer;
+                    console.log('[MANIFEST] Purga de XML y DRM completada.');
                 } catch (err) {
                     console.error('[Manifest Parsing Error]', err);
                 }
             };
-
             return requestInfo;
         };
 
         // =====================================================================
-        // SEGMENT REQUEST HANDLER
+        // MEDIA PLAYBACK INFO (EXTRACCIÓN DEL PROXY & CONFIG DRM)
         // =====================================================================
-        playbackConfig.segmentRequestHandler = (requestInfo) => {
-            requestInfo.withCredentials = false;
-            if (activeCustomData && activeCustomData.headers) {
-                requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
-            }
-            return requestInfo;
-        };
-
-        // =====================================================================
-        // MEDIA PLAYBACK INFO HANDLER
-        // =====================================================================
-        
         playerManager.setMediaPlaybackInfoHandler((loadRequestData, config) => {
             activeCustomData = (loadRequestData.media && loadRequestData.media.customData) ? loadRequestData.media.customData : {};
-            const contentType = (loadRequestData.media && loadRequestData.media.contentType) ? loadRequestData.media.contentType : '';
             const contentId = (loadRequestData.media && loadRequestData.media.contentId) ? loadRequestData.media.contentId : '';
-
             isErrorLoopActive = contentId.includes('static_tv.mp4');
 
-            if (contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
+            // ✨ NUEVO v1.3.4: Capturar la URL de tu proxy en Android (ej. http://192.168.1.19:8888/proxy?url=)
+            if (contentId.includes('/proxy?url=')) {
+                localProxyPrefix = contentId.substring(0, contentId.indexOf('/proxy?url=')) + '/proxy?url=';
+                console.log('[PROXY-INIT] Proxy detectado:', localProxyPrefix);
+            }
+
+            if (loadRequestData.media.contentType.includes('mpegurl') || contentId.includes('.m3u8')) {
                 config.shakaConfiguration = null;
                 config.playbackPipeline = null;
                 return config;
             }
 
             config.shakaConfiguration = Object.assign({}, playbackConfig.shakaConfiguration);
-            // ✨ PARCHE 3: Clonar el objeto drm para no destruir los retryParameters
             config.shakaConfiguration.drm = Object.assign({}, playbackConfig.shakaConfiguration.drm);
             config.shakaConfiguration.drm.clearKeys = {};
             config.shakaConfiguration.drm.servers = {};
@@ -476,65 +336,65 @@
                 config.shakaConfiguration.streaming.bufferingGoal = 3;
                 config.shakaConfiguration.streaming.rebufferingGoal = 1.5;
                 config.shakaConfiguration.streaming.preferLiveSegments = true;
-                console.log('[BUFFER] LIVE: 3s/1.5s');
             } else {
                 config.shakaConfiguration.streaming.bufferingGoal = 10;
                 config.shakaConfiguration.streaming.rebufferingGoal = 4;
-                config.shakaConfiguration.streaming.preferLiveSegments = false;
-                console.log('[BUFFER] VOD: 10s/4s');
             }
 
-            const hasClearKeys = activeCustomData.clearKeys && 
-                                 typeof activeCustomData.clearKeys === 'object' && 
-                                 Object.keys(activeCustomData.clearKeys).length > 0;
-
+            const hasClearKeys = activeCustomData.clearKeys && Object.keys(activeCustomData.clearKeys).length > 0;
             if (hasClearKeys) {
                 config.shakaConfiguration.drm.preferredKeySystems = ['org.w3.clearkey'];
                 for (const [k, v] of Object.entries(activeCustomData.clearKeys)) {
                     if (typeof v === 'string') {
                         const cleanKeyId = k.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                         const cleanKey = v.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
-                        
-                        if (!cleanKeyId || !cleanKey) {
-                            console.error('[DRM-CLEARKEY] KID o KEY vacío después de limpiar:', k, v);
-                            continue;
-                        }
-                        
-                        config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
+                        if (cleanKeyId && cleanKey) config.shakaConfiguration.drm.clearKeys[cleanKeyId] = cleanKey;
                     }
                 }
-                console.log(`[DRM-CLEARKEY] ${Object.keys(config.shakaConfiguration.drm.clearKeys).length} claves configuradas`);
             } else if (activeCustomData.licenseUrl) {
                 config.shakaConfiguration.drm.preferredKeySystems = ['com.widevine.alpha'];
                 config.shakaConfiguration.drm.servers['com.widevine.alpha'] = activeCustomData.licenseUrl;
-                console.log('[DRM-WIDEVINE] License Server:', activeCustomData.licenseUrl);
             }
 
             return config;
         });
 
         // =====================================================================
-        // EVENT LISTENERS
+        // ✨ PARCHE CRÍTICO: SEGMENT REQUEST HANDLER (PROXIFICACIÓN FORZADA)
         // =====================================================================
-        
-        playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
-            if (isErrorLoopActive) {
-                fogLoopRetries++;
-                console.log(`[FOG-LOOP] Video terminó. Reinicio #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
+        playbackConfig.segmentRequestHandler = (requestInfo) => {
+            requestInfo.withCredentials = false;
+            
+            // Si la URL del fragmento va directa a la operadora (es decir, no empieza por la IP de nuestro proxy local en Android)
+            if (localProxyPrefix && requestInfo.url.startsWith('http')) {
+                const baseProxyIp = localProxyPrefix.split('/proxy')[0]; // "http://192.168.1.19:8888"
                 
-                if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
-                    fogLoopTimeout = setTimeout(() => {
-                        playerManager.seek(0);
-                        playerManager.play();
-                    }, 50);
-                } else {
-                    console.error('[FOG-LOOP] MÁXIMO DE REINTENTOS ALCANZADO. Deteniendo.');
-                    isErrorLoopActive = false;
-                    notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
+                if (!requestInfo.url.startsWith(baseProxyIp)) {
+                    // Envolvemos la URL del CDN para que pase obligatoriamente a través del móvil
+                    let wrappedUrl = localProxyPrefix + encodeURIComponent(requestInfo.url);
+                    
+                    // Inyectamos UA y Ref en la URL para que el móvil los use contra el CDN
+                    if (activeCustomData && activeCustomData.userAgent) {
+                        wrappedUrl += '&ua=' + encodeURIComponent(activeCustomData.userAgent);
+                    }
+                    if (activeCustomData && activeCustomData.referer) {
+                        wrappedUrl += '&ref=' + encodeURIComponent(activeCustomData.referer);
+                    }
+                    
+                    console.log('[PROXY-SEGMENT] Fragmento redirigido al móvil:', requestInfo.url.substring(0, 40) + '...');
+                    requestInfo.url = wrappedUrl;
                 }
             }
-        });
 
+            if (activeCustomData && activeCustomData.headers) {
+                requestInfo.headers = Object.assign({}, requestInfo.headers, activeCustomData.headers);
+            }
+            return requestInfo;
+        };
+
+        // =====================================================================
+        // EVENT LISTENERS Y MANEJO DE RED
+        // =====================================================================
         playerManager.addEventListener(cast.framework.events.EventType.PLAYER_LOAD_COMPLETE, () => {
             const shakaPlayer = playerManager.getShakaPlayer();
             if (shakaPlayer) {
@@ -542,15 +402,12 @@
                     const tracks = shakaPlayer.getVariantTracks();
                     const cleanTracks = tracks.filter(t => {
                         const codec = (t.audioCodec || '').toLowerCase();
-                        return !codec.includes('ac-3') && !codec.includes('ec-3') && 
-                               !codec.includes('eac3') && !codec.includes('ac3');
+                        return !codec.includes('ac-3') && !codec.includes('ec-3') && !codec.includes('ac3');
                     });
                     if (cleanTracks.length > 0 && cleanTracks.length < tracks.length) {
                         shakaPlayer.selectVariantTrack(cleanTracks[0], false);
                     }
-                } catch (e) {
-                    console.warn('[Audio Track Filter Warning]', e);
-                }
+                } catch (e) {}
 
                 const netEngine = shakaPlayer.getNetworkingEngine();
                 if (netEngine) {
@@ -558,54 +415,28 @@
                         if (activeCustomData && activeCustomData.headers) {
                             Object.assign(request.headers, activeCustomData.headers);
                         }
-                        
-                        if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                            if (activeCustomData && activeCustomData.drmHeaders) {
-                                Object.assign(request.headers, activeCustomData.drmHeaders);
-                                console.log('[DRM-HEADERS] Cabeceras Widevine DRM inyectadas en licencia');
-                            }
+                        if (type === shaka.net.NetworkingEngine.RequestType.LICENSE && activeCustomData && activeCustomData.drmHeaders) {
+                            Object.assign(request.headers, activeCustomData.drmHeaders);
                         }
                     });
 
                     netEngine.registerResponseFilter((type, response) => {
                         if (type === shaka.net.NetworkingEngine.RequestType.LICENSE) {
-                            console.log(`[LICENSE-RESPONSE] Status: ${response.status}`);
-                            
                             if (response.status === 401 || response.status === 403) {
-                                console.error(`[DRM] Error ${response.status} - Autenticación fallida en servidor de licencias`);
                                 notifySenderFatalError('DRM_LICENSE_AUTH_ERROR', response.status);
                             }
-                            
-                            if (activeCustomData && activeCustomData.clearKeys && 
-                                Object.keys(activeCustomData.clearKeys).length > 0) {
+                            if (activeCustomData && activeCustomData.clearKeys && Object.keys(activeCustomData.clearKeys).length > 0) {
                                 try {
                                     const keysArray = [];
                                     for (const [kId, kVal] of Object.entries(activeCustomData.clearKeys)) {
                                         const cleanKId = kId.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
                                         const cleanKVal = kVal.replace(/[^a-fA-F0-9]/g, '').toLowerCase();
-                                        
-                                        if (!cleanKId.match(/^[0-9a-f]+$/) || !cleanKVal.match(/^[0-9a-f]+$/)) {
-                                            console.error(`[ClearKey] KID o KEY inválido (hex esperado):`, cleanKId, cleanKVal);
-                                            continue;
+                                        if (cleanKId.match(/^[0-9a-f]+$/) && cleanKVal.match(/^[0-9a-f]+$/)) {
+                                            keysArray.push({ kty: 'oct', kid: hexToBase64Url(cleanKId), k: hexToBase64Url(cleanKVal) });
                                         }
-                                        
-                                        keysArray.push({
-                                            kty: 'oct',
-                                            kid: hexToBase64Url(cleanKId),
-                                            k: hexToBase64Url(cleanKVal)
-                                        });
                                     }
-                                    
-                                    if (keysArray.length === 0) {
-                                        console.error('[ClearKey] Ninguna clave válida. Licencia será vacía.');
-                                    }
-                                    
                                     response.data = new TextEncoder().encode(JSON.stringify({ keys: keysArray })).buffer;
-                                    console.log('[ClearKey] JWKS formateado correctamente');
-                                } catch (e) {
-                                    console.error('[ClearKey] Error formateando JWKS:', e.message);
-                                    notifySenderFatalError('CLEARKEY_FORMAT_ERROR', 8001);
-                                }
+                                } catch (e) { notifySenderFatalError('CLEARKEY_FORMAT_ERROR', 8001); }
                             }
                         }
                     });
@@ -613,31 +444,33 @@
             }
         });
 
-        // =====================================================================
-        // ERROR HANDLER CORREGIDO - Código estricto, sin falsos positivos
-        // =====================================================================
+        playerManager.addEventListener(cast.framework.events.EventType.ENDED, () => {
+            if (isErrorLoopActive) {
+                fogLoopRetries++;
+                if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
+                    fogLoopTimeout = setTimeout(() => { playerManager.seek(0); playerManager.play(); }, 50);
+                } else {
+                    isErrorLoopActive = false;
+                    notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
+                }
+            }
+        });
+
         playerManager.addEventListener(cast.framework.events.EventType.ERROR, event => {
             const error = event.error;
             if (!error) return;
 
             const shakaCode = error.shakaErrorCode;
-            
             if (!shakaCode) return; 
 
             console.error(`[ERROR] Shaka Code: ${shakaCode}`);
 
             if (isErrorLoopActive) {
                 fogLoopRetries++;
-                console.warn(`[FOG-LOOP] Error ${shakaCode}. Reintento #${fogLoopRetries}/${MAX_FOG_LOOP_RETRIES}`);
-                
                 if (fogLoopRetries <= MAX_FOG_LOOP_RETRIES) {
-                    fogLoopTimeout = setTimeout(() => {
-                        playerManager.seek(0);
-                        playerManager.play();
-                    }, 1000);
+                    fogLoopTimeout = setTimeout(() => { playerManager.seek(0); playerManager.play(); }, 1000);
                     return;
                 } else {
-                    console.error('[FOG-LOOP] Máximo de reintentos alcanzado');
                     isErrorLoopActive = false;
                     notifySenderFatalError('FOG_LOOP_MAX_RETRIES', 9999);
                     return;
@@ -646,10 +479,7 @@
 
             if (shakaCode === 4015) { 
                 stallRetries++;
-                console.warn(`[STALL] Buffer atascado. Reintento ${stallRetries}/${MAX_STALL_RETRIES}`);
-                
                 if (stallRetries >= MAX_STALL_RETRIES) {
-                    console.error('[STALL] Bucle infinito de buffer detectado');
                     notifySenderFatalError('BUFFER_STALL_LOOP', 4015);
                     playerManager.stop();
                 }
@@ -658,20 +488,11 @@
                 stallRetries = 0;
             }
 
-            const FATAL_CODES = [
-                1001, 1002, 1003, 
-                6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6012 
-            ];
+            const FATAL_CODES = [1001, 1002, 1003, 6000, 6001, 6002, 6003, 6004, 6005, 6006, 6007, 6008, 6012];
 
             if (FATAL_CODES.includes(shakaCode)) {
-                console.error(`[CRITICAL] Error irrecuperable (${shakaCode}). Deteniendo reproducción.`);
-                
-                let errorReason = 'FATAL_ERROR';
-                if (shakaCode >= 6000 && shakaCode <= 6099) {
-                    errorReason = 'DRM_ERROR';
-                }
-                
-                notifySenderFatalError(errorReason, shakaCode);
+                console.error(`[CRITICAL] Error irrecuperable (${shakaCode}).`);
+                notifySenderFatalError((shakaCode >= 6000 && shakaCode <= 6099) ? 'DRM_ERROR' : 'FATAL_ERROR', shakaCode);
                 playerManager.stop();
             } else {
                 console.warn(`[RECOVERABLE] Error temporal (${shakaCode}). Permitiendo reintentos automáticos de Shaka...`);
@@ -680,21 +501,12 @@
 
         context.start({ playbackConfig: playbackConfig });
 
-        // =====================================================================
-        // LOGGING DE INICIALIZACIÓN
-        // =====================================================================
         console.log(`
 ╔════════════════════════════════════════════════════════════════╗
-║   KoreStream Receiver v1.3.3 - Inicialización OK               ║
+║   KoreStream Receiver v1.3.4 - Inicialización OK               ║
 ╠════════════════════════════════════════════════════════════════╣
 ║ Dispositivo: ${CURRENT_DEVICE.padEnd(54)}║
-║ Codecs Video: ${getVideoCodecPreferences(CURRENT_DEVICE).join(', ').padEnd(49)}║
-║ Codecs Audio: AAC (AC-3 filtrado por seguridad)                ║
-║ Live Detection: MPD@type (DASH RFC 6235)                       ║
-║ Custom Channel: ${CUSTOM_CHANNEL.padEnd(50)}║
-║ Fog Loop: ENABLED (máx ${MAX_FOG_LOOP_RETRIES} reintentos)                 ║
-║ Stall Detection: ENABLED (máx ${MAX_STALL_RETRIES} stalleos)               ║
-║ DRM Headers: ENABLED (Widevine vía requestFilter)              ║
+║ Segment Proxying: ENABLED (Redirección forzada de CDN a móvil) ║
 ╚════════════════════════════════════════════════════════════════╝
         `);
     </script>
